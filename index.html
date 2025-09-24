@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Loan Application</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="progress-bar">
+            <span class="progress-text">Step 1 of 5</span>
+            <div class="progress-line">
+                <div class="progress-fill"></div>
+            </div>
+        </div>
+
+        <form id="loanApplication" novalidate>
+            <!-- Step 1: Personal Information -->
+            <div class="step active-step" id="step1">
+                <h2>Personal Information</h2>
+                <div class="form-group">
+                    <label for="fullName">Full Name</label>
+                    <input type="text" id="fullName" name="fullName" required>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="dob">Date of Birth</label>
+                    <input type="date" id="dob" name="dob" required>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="address">Address</label>
+                    <textarea id="address" name="address" required></textarea>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" required>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="phone">Phone Number</label>
+                    <input type="tel" id="phone" name="phone" pattern="[0-9]{10}" required>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="pan">PAN Number</label>
+                    <input type="text" id="pan" name="pan" pattern="[A-Z]{5}[0-9]{4}[A-Z]{1}" required>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="aadhaar">Aadhaar Number</label>
+                    <input type="text" id="aadhaar" name="aadhaar" pattern="[0-9]{12}" required>
+                    <div class="error-message"></div>
+                </div>
+            </div>
+
+            <!-- Step 2: Employment & Income -->
+            <div class="step" id="step2">
+                <h2>Employment & Income</h2>
+                <div class="form-group">
+                    <label for="employmentStatus">Employment Status</label>
+                    <select id="employmentStatus" name="employmentStatus" required>
+                        <option value="">Select Status</option>
+                        <option value="employed">Employed</option>
+                        <option value="self-employed">Self-Employed</option>
+                        <option value="unemployed">Unemployed</option>
+                    </select>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="employerName">Employer Name</label>
+                    <input type="text" id="employerName" name="employerName" required>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="jobTitle">Job Title</label>
+                    <input type="text" id="jobTitle" name="jobTitle" required>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="monthlyIncome">Monthly Income (₹)</label>
+                    <input type="number" id="monthlyIncome" name="monthlyIncome" min="0" required>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="otherIncome">Other Sources of Income (₹)</label>
+                    <input type="number" id="otherIncome" name="otherIncome" min="0" required>
+                    <div class="error-message"></div>
+                </div>
+            </div>
+
+            <!-- Step 3: Loan Details -->
+            <div class="step" id="step3">
+                <h2>Loan Details</h2>
+                <div class="form-group">
+                    <label for="loanAmount">Loan Amount (₹)</label>
+                    <input type="number" id="loanAmount" name="loanAmount" min="100000" max="1000000" required>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="loanPurpose">Loan Purpose</label>
+                    <select id="loanPurpose" name="loanPurpose" required>
+                        <option value="">Select Purpose</option>
+                        <option value="debt-consolidation">Debt Consolidation</option>
+                        <option value="home-improvement">Home Improvement</option>
+                        <option value="function">Function</option>
+                    </select>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="loanTerm">Loan Term (in months)</label>
+                    <input type="number" id="loanTerm" name="loanTerm" min="12" max="60" required>
+                    <div class="error-message"></div>
+                </div>
+            </div>
+
+            <!-- Step 4: Document Upload -->
+            <div class="step" id="step4">
+                <h2>Document Upload</h2>
+                <div class="form-group">
+                    <label for="panCard">PAN Card Photo</label>
+                    <input type="file" id="panCard" name="panCard" accept="image/*" required>
+                    <div class="error-message"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="aadhaarCard">Aadhaar Card Photo</label>
+                    <input type="file" id="aadhaarCard" name="aadhaarCard" accept="image/*" required>
+                    <div class="error-message"></div>
+                </div>
+            </div>
+
+            <!-- Step 5: Review & Submit -->
+            <div class="step" id="step5">
+                <h2>Review Your Application</h2>
+                <div id="reviewContent" class="review-content">
+                    <!-- Will be populated dynamically via JavaScript -->
+                </div>
+            </div>
+
+            <!-- Navigation Buttons -->
+            <div class="form-navigation">
+                <button type="button" id="prevBtn" class="btn" style="display: none;">Previous</button>
+                <button type="button" id="nextBtn" class="btn">Next</button>
+                <button type="submit" id="submitBtn" class="btn" style="display: none;">Submit Application</button>
+            </div>
+        </form>
+
+        <!-- Confirmation Page -->
+        <div id="confirmationPage" class="confirmation-page" style="display: none;">
+            <h2>Application Submitted Successfully!</h2>
+            <p>Thanks for submitting the loan application, basis the data received you'll get the amount disbursed in your account in the next 2 hours, our team may reach out for some additional information if required.</p>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
