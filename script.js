@@ -1,16 +1,16 @@
 // Movie data
 const movies = [
     {
-        title: "Superman",
+        title: "Man of Steel",
         description: "Superman after years of protecting earth faces its biggest challenge.",
-        poster: "https://via.placeholder.com/200x300.png?text=Superman",
+        poster: "superman.jpg",
         price: 800,
         showtimes: ["10:00 AM", "1:00 PM", "4:00 PM"]
     },
     {
-        title: "Cybernetic City",
+        title: "RoboCop",
         description: "In a futuristic city, a detective hunts a rogue AI that threatens humanity.",
-        poster: "https://via.placeholder.com/200x300.png?text=Cybernetic+City",
+        poster: "robocop.jpg",
         price: 750,
         showtimes: ["11:30 AM", "2:45 PM", "6:00 PM", "9:15 PM"]
     }
