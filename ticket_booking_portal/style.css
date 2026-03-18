@@ -1,0 +1,250 @@
+:root {
+    --primary-color: #2196f3;
+    --background-color: #121212;
+    --surface-color: #1e1e1e;
+    --text-primary: #ffffff;
+    --text-secondary: rgba(255, 255, 255, 0.7);
+    --seat-available: #424242;
+    --seat-selected: #2196f3;
+    --seat-occupied: #212121;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background-color: var(--background-color);
+    color: var(--text-primary);
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 3rem;
+}
+
+/* Movie Grid Styles */
+.movies-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 2rem;
+}
+
+.movie-card {
+    background-color: var(--surface-color);
+    border-radius: 8px;
+    overflow: hidden;
+    transition: transform 0.2s;
+}
+
+.movie-card:hover {
+    transform: translateY(-5px);
+}
+
+.movie-card img {
+    width: 100%;
+    height: 375px;
+    object-fit: cover;
+}
+
+.movie-card-content {
+    padding: 1rem;
+}
+
+.movie-card h3 {
+    margin-bottom: 0.5rem;
+}
+
+.movie-card p {
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+}
+
+/* Booking Container Styles */
+#booking-container {
+    background-color: var(--surface-color);
+    border-radius: 8px;
+    padding: 2rem;
+}
+
+.movie-details {
+    display: flex;
+    gap: 2rem;
+    margin-bottom: 2rem;
+}
+
+.movie-details img {
+    width: 200px;
+    height: 300px;
+    object-fit: cover;
+    border-radius: 4px;
+}
+
+.movie-info {
+    flex: 1;
+}
+
+/* Showtime Selection Styles */
+.showtime-selection {
+    margin-bottom: 2rem;
+}
+
+#showtime-buttons {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-top: 1rem;
+}
+
+/* Seat Map Styles */
+.seat-map-container {
+    margin: 2rem 0;
+}
+
+.screen {
+    background: var(--text-secondary);
+    height: 5px;
+    width: 100%;
+    max-width: 600px;
+    margin: 0 auto 2rem;
+    position: relative;
+}
+
+.screen::after {
+    content: 'SCREEN';
+    position: absolute;
+    top: -25px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+#seat-map {
+    display: grid;
+    grid-template-columns: repeat(10, 1fr);
+    gap: 0.5rem;
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.seat {
+    aspect-ratio: 1;
+    background-color: var(--seat-available);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.seat.selected {
+    background-color: var(--seat-selected);
+}
+
+.seat.occupied {
+    background-color: var(--seat-occupied);
+    cursor: not-allowed;
+}
+
+/* Seat Legend Styles */
+.seat-legend {
+    display: flex;
+    justify-content: center;
+    gap: 2rem;
+    margin: 2rem 0;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.legend-item .seat {
+    width: 20px;
+    height: 20px;
+    cursor: default;
+}
+
+/* Booking Summary Styles */
+.booking-summary {
+    text-align: center;
+    margin-top: 2rem;
+}
+
+#price-summary {
+    font-size: 1.2rem;
+    margin-bottom: 1rem;
+}
+
+/* Button Styles */
+.button {
+    padding: 0.8rem 1.5rem;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
+    transition: background-color 0.2s;
+}
+
+.button.primary {
+    background-color: var(--primary-color);
+    color: white;
+}
+
+.button.primary:disabled {
+    background-color: var(--seat-available);
+    cursor: not-allowed;
+}
+
+.back-button {
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 1rem;
+    margin-bottom: 1rem;
+}
+
+.back-button:hover {
+    color: var(--primary-color);
+}
+
+/* Utility Classes */
+.hidden {
+    display: none;
+}
+
+/* Payment Page Styles */
+.payment-container {
+    max-width: 600px;
+    margin: 0 auto;
+    background-color: var(--surface-color);
+    padding: 2rem;
+    border-radius: 8px;
+}
+
+.booking-details {
+    margin: 2rem 0;
+    padding: 1rem;
+    background-color: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+}
+
+.booking-details p {
+    margin: 0.5rem 0;
+    color: var(--text-secondary);
+}
+
+.booking-details strong {
+    color: var(--text-primary);
+}

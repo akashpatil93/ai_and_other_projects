@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Movie Ticket Booking</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Movie Ticket Booking</h1>
+        </header>
+
+        <main>
+            <!-- Movie List View -->
+            <div id="movie-list-container">
+                <div class="movies-grid"></div>
+            </div>
+
+            <!-- Booking View (Initially Hidden) -->
+            <div id="booking-container" class="hidden">
+                <button id="back-to-movies" class="back-button">← Back to Movies</button>
+                
+                <div class="movie-details">
+                    <img id="selected-movie-poster" alt="Movie Poster">
+                    <div class="movie-info">
+                        <h2 id="selected-movie-title"></h2>
+                        <p id="selected-movie-description"></p>
+                    </div>
+                </div>
+
+                <div class="showtime-selection">
+                    <h3>Select Showtime</h3>
+                    <div id="showtime-buttons"></div>
+                </div>
+
+                <div id="seat-selection" class="hidden">
+                    <h3>Select Seats</h3>
+                    <div class="seat-map-container">
+                        <div class="screen">Screen</div>
+                        <div id="seat-map"></div>
+                    </div>
+
+                    <div class="seat-legend">
+                        <div class="legend-item">
+                            <div class="seat available"></div>
+                            <span>Available</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="seat selected"></div>
+                            <span>Selected</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="seat occupied"></div>
+                            <span>Occupied</span>
+                        </div>
+                    </div>
+
+                    <div class="booking-summary">
+                        <p id="price-summary">0 Seats | Total: ₹0</p>
+                        <button id="book-now" class="button primary" disabled>Book Now</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
