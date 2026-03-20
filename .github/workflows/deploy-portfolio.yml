@@ -3,8 +3,7 @@ name: Deploy Portfolio to GitHub Pages
 on:
   push:
     branches: ["main"]
-    paths:
-      - 'portfolio/**'
+  # Allows manual triggers
   workflow_dispatch:
 
 permissions:
@@ -26,20 +25,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Prepare Deployment Directory
-        run: |
-          mkdir public
-          # The dot after portfolio/ ensures we copy the contents, not the folder itself
-          cp -a portfolio/. public/
-          
       - name: Setup Pages
         uses: actions/configure-pages@v4
         
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Pointing to the new folder where index.html is at the root
-          path: './public'
+          # Points directly to the folder containing index.html
+          path: './portfolio'
           
       - name: Deploy to GitHub Pages
         id: deployment
