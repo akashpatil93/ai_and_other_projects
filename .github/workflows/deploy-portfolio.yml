@@ -26,13 +26,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      - name: Prepare Deployment Directory
+        run: |
+          mkdir public
+          # The dot after portfolio/ ensures we copy the contents, not the folder itself
+          cp -a portfolio/. public/
+          
       - name: Setup Pages
         uses: actions/configure-pages@v4
         
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './portfolio'
+          # Pointing to the new folder where index.html is at the root
+          path: './public'
           
       - name: Deploy to GitHub Pages
         id: deployment
