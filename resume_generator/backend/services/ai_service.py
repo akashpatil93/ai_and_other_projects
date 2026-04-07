@@ -53,7 +53,7 @@ class AIService:
         try:
             if self.agent == "claude":
                 self.client.messages.create(
-                    model="claude-haiku-4-5",
+                    model="claude-haiku-4-5-20251001",
                     max_tokens=10,
                     messages=[{"role": "user", "content": "Hi"}],
                 )
@@ -66,6 +66,6 @@ class AIService:
 
         except Exception as e:
             err = str(e)
-            if "401" in err or "invalid" in err.lower() or "api key" in err.lower():
+            if "401" in err or "authentication" in err.lower() or "api key" in err.lower() or "unauthorized" in err.lower():
                 return False, "Invalid API key. Please check and try again."
             return False, f"Validation failed: {err}"
