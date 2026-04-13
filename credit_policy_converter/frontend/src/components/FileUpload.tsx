@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 
 interface Props {
-  onUpload: (file: File) => void
+  onUpload: (file: File, context: string) => void
 }
 
 const ACCEPTED = ['.xlsx', '.xls', '.pdf', '.docx', '.json', '.csv']
@@ -9,6 +9,7 @@ const ACCEPTED = ['.xlsx', '.xls', '.pdf', '.docx', '.json', '.csv']
 export default function FileUpload({ onUpload }: Props) {
   const [dragging, setDragging] = useState(false)
   const [selected, setSelected] = useState<File | null>(null)
+  const [context, setContext] = useState('')
 
   const pick = useCallback((file: File) => setSelected(file), [])
 
@@ -84,6 +85,29 @@ export default function FileUpload({ onUpload }: Props) {
         <p className="text-xs text-gray-400 mt-4">Supported: {ACCEPTED.join(', ')}</p>
       </div>
 
+      {/* Context input */}
+      <div className="mt-6">
+        <label className="block text-sm font-medium text-gray-700 mb-1.5">
+          Additional context
+          <span className="ml-1.5 font-normal text-gray-400">(optional)</span>
+        </label>
+        <textarea
+          value={context}
+          onChange={(e) => setContext(e.target.value)}
+          rows={4}
+          placeholder={
+            'Describe any specifics the AI should follow when building the workflow.\n' +
+            'e.g. "This is a personal loan policy for salaried customers. ' +
+            'DPD threshold for rejection is 30+ in last 12 months. ' +
+            'Bureau score must be ≥ 700 for CIBIL HIT cases."'
+          }
+          className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none"
+        />
+        <p className="mt-1.5 text-xs text-gray-400">
+          This context is passed directly to Claude alongside your document to guide rule extraction.
+        </p>
+      </div>
+
       {/* Selected file + action */}
       {selected && (
         <div className="mt-4 p-4 bg-white border border-gray-200 rounded-xl flex items-center justify-between shadow-sm">
@@ -109,7 +133,7 @@ export default function FileUpload({ onUpload }: Props) {
             </div>
           </div>
           <button
-            onClick={() => onUpload(selected)}
+            onClick={() => onUpload(selected, context)}
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-medium text-sm transition flex items-center gap-2"
           >
             Generate Workflow

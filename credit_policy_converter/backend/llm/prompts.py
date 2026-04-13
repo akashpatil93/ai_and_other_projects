@@ -9,35 +9,185 @@ Contains all domain knowledge: field mappings, expression syntax, and per-sectio
 
 BUREAU_FIELDS = """
 ## Bureau Fields  (prefix: bureau.)
+
+### DPD (Days Past Due) Variables
 | Policy Document Term                          | JSON Field                                          |
 |-----------------------------------------------|-----------------------------------------------------|
-| CIBIL Bureau Score / Bureau Score             | bureau.bureauscore                                  |
-| Max Overdue Amount                            | bureau.max_overdue                                  |
 | Max DPD in last 6 months                      | bureau.max_dpd_last_6_mo                            |
 | Max DPD in last 12 months                     | bureau.max_dpd_inlast12months                       |
 | Max DPD in last 24 months                     | bureau.max_dpd_inlast24months                       |
+| Max DPD (non-CC) in last 3 months             | bureau.max_dpd_non_cc_last_3mo                      |
+| Max DPD (CC) in last 3 months                 | bureau.max_dpd_cc_last_3mo                          |
+| Count of 0+ DPD accounts in last 12 months   | bureau.cnt_0plus_dpd_12mo                           |
+| Count of 30+ DPD accounts in last 12 months  | bureau.cnt_30plus_dpd_last12months                  |
+| Count of 60+ DPD accounts in last 12 months  | bureau.cnt_60plus_dpd_last12months                  |
+| Count of 90+ DPD accounts in last 12 months  | bureau.cnt_90plus_dpd_last12months                  |
+| Count of 30+ DPD accounts in last 24 months  | bureau.cnt_30plus_dpd_last24months                  |
+| Count of 60+ DPD accounts in last 24 months  | bureau.cnt_60plus_dpd_last24months                  |
+| Count of 90+ DPD accounts in last 24 months  | bureau.cnt_90plus_dpd_last24months                  |
+| Count of 0+ DPD in last 3 months             | bureau.cnt_0plus_dpd_3mo                            |
+| Count of 30+ DPD in last 3 months            | bureau.cnt_30plus_dpd_3mo                           |
+
+### Bureau Score Variables
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| CIBIL Bureau Score / Bureau Score             | bureau.bureauscore                                  |
+| CIBIL Bureau Score (explicit)                 | bureau.bureau_score_cibil                           |
+| Experian Bureau Score                         | bureau.bureau_score_experian                        |
+| Equifax Bureau Score                          | bureau.bureau_score_equifax                         |
+| CRIF Bureau Score                             | bureau.bureau_score_crif                            |
+| Bureau Score Bucket / Band                    | bureau.bureau_score_bucket                          |
+
+### Outstanding Balance Variables
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| All loans outstanding                         | bureau.amt_pos_all_loans                            |
+| Unsecured loans outstanding                   | bureau.amt_pos_unsecured_loans                      |
+| Total outstanding amount                      | bureau.total_outstanding_amount                     |
+| Total outstanding (credit card)               | bureau.total_outstanding_amount_cc                  |
+| Active unsecured current balance              | bureau.current_balance_active_unsecured             |
+| Max overdue amount                            | bureau.max_overdue                                  |
+| Sum overdue                                   | bureau.sum_overdue                                  |
+
+### Settlement / Written-off Variables
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Settlement/Written-off count                  | bureau.settlement_writtenoff                        |
+| Total written-off amount                      | bureau.total_writtenoff_amt                         |
+| Written-off amounts in last 24 months         | bureau.amts_writtenoff_last24months                 |
 | Write-off / Settled / Restructured count (24M)| bureau.cnt_wo_settled_restructured_last24months     |
-| Suit filed / Wilful defaulter count           | bureau.cnt_suit_filed_willful_defaul                |
-| Oldest tradeline (non-guarantor) months       | bureau.months_since_first_opened_non_guarantor      |
-| PL/BL balance >=1L opened last 3M count       | bureau.cnt_pl_bl_bal_gte_1lac_open_last3months      |
-| PL/BL balance >1L opened last 6M count        | bureau.cnt_pl_bl_bal_gt_1lac_open_last6months       |
 | DBT/LSS count                                 | bureau.cnt_dbt_lss                                  |
 | SMA / SUB count                               | bureau.cnt_sma_sub                                  |
-| Sum overdue                                   | bureau.sum_overdue                                  |
-| Enquiry last 3 months                         | bureau.enquiry_last3months                          |
-| PL/BL enquiry last 90 days                    | bureau.cnt_enquiry_pl_bl_last90days                 |
-| Max DPD non-CC last 3M                        | bureau.max_dpd_non_cc_last_3mo                      |
-| Max DPD CC last 3M                            | bureau.max_dpd_cc_last_3mo                          |
-| Oldest loan months                            | bureau.months_since_first_opened                    |
-| Suit filed / Wilful default in 24M            | bureau.cnt_suit_filed_willful_default_in_last24months|
 | DBT/LSS/SMA/SUB last 24M                      | bureau.cnt_dbt_lss_sma_sub_last24mo                 |
-| Non-guarantor tradelines 6MOB                 | bureau.cnt_non_guarantor_6mob                       |
-| Active unsecured current balance              | bureau.current_balance_active_unsecured             |
-| All loans outstanding                         | bureau.amt_pos_all_loans                            |
+
+### Delinquency Flag Variables
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Settlement/Written-off flag (boolean)         | bureau.settlement_writtenoff_flag                   |
+| Written-off flag (boolean)                    | bureau.written_off_flag                             |
+| Suit filed / Wilful defaulter count           | bureau.cnt_suit_filed_willful_defaul                |
+| Suit filed / Wilful default in last 24M       | bureau.cnt_suit_filed_willful_default_in_last24months|
+| Suit filed / Wilful default in 24M (flag)     | bureau.is_suitfiled_wilfuldefault_last24months      |
+
+### Credit Card Variables
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Total sanctioned amount (credit card)         | bureau.total_sanctioned_amount_cc                   |
+| Max credit card limit in last 2 years         | bureau.max_credit_card_limit_last2year              |
+| Credit card utilization percentage            | bureau.cc_utilization_percentage                    |
+
+### Enquiry Variables
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Enquiries in last 30 days                     | bureau.enquiry_last30days                           |
+| Enquiries in last 3 months                    | bureau.enquiry_last3months                          |
+| Enquiries in last 90 days                     | bureau.enquiry_last90days                           |
+| Enquiries in last 6 months                    | bureau.enquiry_last6months                          |
+| Unsecured enquiries in last 6 months          | bureau.enquiry_unsecured_last6months                |
+| PL/BL enquiries in last 90 days               | bureau.cnt_enquiry_pl_bl_last90days                 |
+
+### Account Opening / Count Variables
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| New accounts opened in last 30 days           | bureau.new_open_acc_last30days                      |
+| New accounts opened in last 6 months          | bureau.new_open_acc_last6months                     |
+| Total count of all accounts                   | bureau.cnt_all_accounts                             |
+| Non-guarantor tradelines (6MOB)               | bureau.cnt_non_guarantor_6mob                       |
+| Oldest tradeline (non-guarantor) months       | bureau.months_since_first_opened_non_guarantor      |
+| Oldest loan months                            | bureau.months_since_first_opened                    |
+
+### Loan-Type Specific Variables
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
 | Max sanctioned PL active 6MOB                 | bureau.max_sanct_amt_pl_active_6mob                 |
 | Max sanctioned BL active 6MOB                 | bureau.max_sanct_amt_bl_active_6mob                 |
 | Max sanctioned AL active 6MOB                 | bureau.max_sanct_amt_al_active_6mob                 |
 | Max sanctioned HL/LAP active 6MOB             | bureau.max_sanct_amt_hl_lap_active_6mob             |
+| PL/BL balance >=1L opened last 3M count       | bureau.cnt_pl_bl_bal_gte_1lac_open_last3months      |
+| PL/BL balance >1L opened last 6M count        | bureau.cnt_pl_bl_bal_gt_1lac_open_last6months       |
+"""
+
+BANK_FIELDS = """
+## Bank Statement Fields  (prefix: bank.)
+These come from the Bank Statement data source. Use the exact variable names below.
+
+### Average Balance & Cash Flow
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Average Bank Balance (ABB)                    | bank.abb                                            |
+| Average End-of-Day Balance                    | bank.eod_balance_avg                                |
+| Min End-of-Day Balance (last 3M)              | bank.eod_balance_min_3mo                            |
+| Average Monthly Credits (income)              | bank.income_avg                                     |
+| Average Monthly Debits (expenses)             | bank.expense_avg                                    |
+| Monthly income M+0 (current month)            | bank.income_0                                       |
+| Monthly income M-1                            | bank.income_1                                       |
+| Monthly income M-2                            | bank.income_2                                       |
+| Monthly income M-3                            | bank.income_3                                       |
+| Monthly income M-4                            | bank.income_4                                       |
+| Monthly income M-5                            | bank.income_5                                       |
+| Monthly income M-6                            | bank.income_6                                       |
+| Monthly income M-7 to M-11 (older months)    | bank.income_7 … bank.income_11                      |
+| Monthly expense M+0 (current month)           | bank.expense_0                                      |
+| Monthly expense M-1 to M-11                   | bank.expense_1 … bank.expense_11                    |
+
+### Salary / Regular Credit
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Salary credit count (last 3M)                 | bank.salary_credit_count_3mo                        |
+| Salary credit count (last 6M)                 | bank.salary_credit_count_6mo                        |
+| Average salary credit amount                  | bank.salary_credit_avg                              |
+| Last salary credit amount                     | bank.salary_credit_last                             |
+| Months since last salary credit               | bank.months_since_last_salary                       |
+
+### Bounce Metrics
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Total bounces (last 3M)                       | bank.total_bounce_count_3mo                         |
+| Total bounces (last 6M)                       | bank.total_bounce_count_6mo                         |
+| Inward cheque bounce count (last 3M)          | bank.inward_bounce_count_3mo                        |
+| Outward cheque bounce count (last 3M)         | bank.outward_bounce_count_3mo                       |
+| ACH / NACH bounce count (last 3M)             | bank.ach_bounce_count_3mo                           |
+| ACH / NACH bounce count (last 6M)             | bank.ach_bounce_count_6mo                           |
+| EMI bounce count (last 3M)                    | bank.emi_bounce_count_3mo                           |
+| EMI bounce count (last 6M)                    | bank.emi_bounce_count_6mo                           |
+| Bounce rate (bounces / total transactions)    | bank.bounce_rate                                    |
+
+### EMI & Obligation
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Total EMI debit amount (last 3M avg)          | bank.emi_debit_avg_3mo                              |
+| Total EMI debit amount (last 6M avg)          | bank.emi_debit_avg_6mo                              |
+| EMI to income ratio (bank-derived FOIR)       | bank.emi_to_income_ratio                            |
+| Number of unique EMI debits (last 3M)         | bank.emi_debit_count_3mo                            |
+| Recurring debit count (NACH/SI)               | bank.recurring_debit_count_3mo                      |
+
+### Cash Transactions
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Average cash withdrawal (monthly)             | bank.cash_withdrawal_avg                            |
+| Cash withdrawal to income ratio               | bank.cash_to_income_ratio                           |
+| Average cash deposit (monthly)                | bank.cash_deposit_avg                               |
+
+### UPI & Digital Transactions
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| UPI credit transaction count (last 3M)        | bank.upi_credit_count_3mo                           |
+| UPI debit transaction count (last 3M)         | bank.upi_debit_count_3mo                            |
+| UPI credit amount (last 3M)                   | bank.upi_credit_amt_3mo                             |
+| UPI debit amount (last 3M)                    | bank.upi_debit_amt_3mo                              |
+
+### Overdraft / OD Utilization
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Overdraft utilization percentage              | bank.od_utilization_pct                             |
+| Number of days OD utilized (last 3M)          | bank.od_days_3mo                                    |
+
+### Vintage & Summary
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Bank statement vintage (months available)     | bank.vintage_months                                 |
+| Number of accounts in statement               | bank.account_count                                  |
+| Total transaction count (last 3M)             | bank.total_txn_count_3mo                            |
 """
 
 INPUT_FIELDS = """
@@ -116,16 +266,15 @@ prefix with that node's name:
 ### Rule 3 — Node execution order matters
 A node can only reference outputs of nodes that appear EARLIER in the workflow.
 The workflow order is:
-  Start → bureau (dataSource) → scorecard (optional modelSet)
-        → model (modelSet)
-        → [muted_go_no_go_checks ruleSet] → [go_no_go_checks ruleSet]
-        → [muted_surrogate_policy_checks ruleSet] → [surrogate_policy_checks ruleSet]
+  Start → bureau (dataSource) → bank (dataSource, if bank vars used)
+        → scorecard (optional modelSet) → model (optional modelSet)
+        → [muted_<name> ruleSets] → [active ruleSets]
         → final_decision (branch) → eligibility (optional modelSet) → end
 
 So:
-  - "model" can reference bureau.* and input.* only (scorecard runs before model if present)
-  - "go_no_go_checks" can reference bureau.*, input.*, model.*, scorecard.*
-  - "eligibility" can reference all of the above plus go_no_go_checks.decision etc.
+  - "model" can reference bureau.*, bank.*, and input.* only
+  - ruleSet nodes can reference bureau.*, bank.*, input.*, model.*, scorecard.*
+  - "eligibility" can reference all of the above plus ruleSet decisions
 
 ### Summary table
 | Where you are writing  | To use a value from       | Write                          |
@@ -145,7 +294,9 @@ EXPRESSION_SYNTAX = """
 
 Data source prefixes (external inputs):
   bureau.*   → bureau pull fields (see Bureau Fields table)
+  bank.*     → bank statement fields (see Bank Fields table)
   input.*    → application/request fields (see Input Fields table)
+              If a policy variable is not in bureau or bank tables → use input.*
 
 Computed value references (see Expression Reference Rules above):
   <modelset_name>.<expr_name>   → cross-node reference
@@ -224,8 +375,18 @@ Your responsibilities:
 5. Identify muted / inactive rules and mark them muted=true.
 6. Use the correct cross-node reference syntax (see Expression Reference Rules).
 7. Return ONLY valid JSON — no markdown fences, no explanations.
+8. NEVER leave approveCondition blank. If a variable is not in the bureau or bank
+   dictionaries, declare it as input.<variable_name> and write the rule against it.
+
+## Variable Namespace Rules (CRITICAL)
+There are exactly three data source namespaces:
+  bureau.*  → Credit bureau pull fields (CIBIL, Experian, Equifax, CRIF). See Bureau Fields table.
+  bank.*    → Bank statement analysis fields (ABB, bounces, EMI, salary, UPI, etc.). See Bank Fields table.
+  input.*   → Everything else — application data, user-provided fields, policy parameters.
+              When a policy variable is NOT in the bureau or bank tables, use input.<name>.
 
 {BUREAU_FIELDS}
+{BANK_FIELDS}
 {INPUT_FIELDS}
 {MODEL_FIELDS}
 {EXPRESSION_REF_RULES}
@@ -246,15 +407,32 @@ SECTIONS:
 Return a single JSON object mapping each section name to a type string.
 
 Valid types:
-  "go_no_go"        – Go/No-Go eligibility rules (binary pass/fail checks)
-  "surrogate_policy"– Surrogate/alternative policy rules
-  "scorecard"       – Scorecard model features, WOE coefficients, bureau feature bins
-  "eligibility"     – Loan amount / EMI / FOIR computations
-  "exposure"        – Internal exposure or portfolio limit rules
-  "common_rules"    – Shared rules used across programs
-  "pre_read"        – Context, HIT/NO-HIT definitions — SKIP
-  "change_history"  – Changelog / version history — SKIP
-  "metadata"        – Unclassifiable content — SKIP
+  "go_no_go"                   – General Go/No-Go eligibility rules (binary pass/fail checks)
+  "dpd_checks"                 – DPD (Days Past Due) based rules — max DPD, DPD count thresholds
+  "bureau_score_checks"        – Bureau score based rules — CIBIL, Experian, Equifax, CRIF score thresholds
+  "outstanding_balance_checks" – Outstanding amount / overdue balance rules
+  "enquiry_checks"             – Credit enquiry count rules (last 30/90 days, 6 months, etc.)
+  "written_off_settlement_checks" – Written-off / settled / restructured / DBT / LSS account rules
+  "delinquency_flag_checks"    – Delinquency flags — suit filed, wilful default, written-off flag
+  "credit_card_checks"         – Credit card specific rules — utilization, CC outstanding, CC DPD
+  "account_opening_checks"     – New account opening / account count rules
+  "surrogate_policy"           – Surrogate/alternative policy rules
+  "scorecard"                  – Scorecard model features, WOE coefficients, bureau feature bins
+  "eligibility"                – Loan amount / EMI / FOIR computations
+  "exposure"                   – Internal exposure or portfolio limit rules
+  "common_rules"               – Shared rules used across programs
+  "pre_read"                   – Context, input payload definitions, HIT/NO-HIT definitions — SKIP
+  "change_history"             – Changelog / version history — SKIP
+  "metadata"                   – Truly unclassifiable content (do NOT use for policy rule sections)
+
+IMPORTANT:
+- Prefer specific bureau categories (dpd_checks, bureau_score_checks, etc.) over "go_no_go"
+  when the section clearly focuses on a specific bureau variable category.
+- If a section contains policy rules, checks, or validations of ANY kind and does not fit a
+  more specific type, classify it as "go_no_go" — never as "metadata".
+- Sections named after specific checks (e.g. "Location Strategy", "Business Vintage",
+  "Age checks", "Negative Databases", "PAN Check", "Bank Statement Checks") are "go_no_go".
+- "Input Payload" or variable definition tables → "pre_read" (SKIP).
 
 Return ONLY valid JSON, no explanation:
 {{"<section_name>": "<type>"}}
@@ -275,8 +453,9 @@ MUTED RULES: Rules marked "Muted", "M", "Inactive", or "Not in force" get muted=
 They are still evaluated but never block approval.
 
 UPSTREAM NODES AVAILABLE (in execution order before this ruleSet):
-  bureau.*          → all bureau pull fields
-  input.*           → all application input fields
+  bureau.*          → all bureau pull fields (see Bureau Fields table)
+  bank.*            → all bank statement fields (see Bank Fields table)
+  input.*           → all application input fields (anything not in bureau or bank tables)
   model.hit_no_hit  → true/false, computed in the "model" modelSet
   model.age_at_maturity → number, computed in the "model" modelSet
   scorecard.<name>  → if a scorecard modelSet exists, its expression outputs
@@ -287,14 +466,16 @@ SECTION CONTENT:
 For each rule output:
 {{
   "name": "RULE_CODE: Short description",
-  "approveCondition": "expression — use bureau.*, input.*, or model.<expr> for derived values",
+  "approveCondition": "expression — use bureau.*, bank.*, input.*, or model.<expr>",
   "cantDecideCondition": "",
   "muted": false
 }}
 
 MANDATORY:
 - INVERT every reject condition into an approve condition.
-- Add "|| field == nil" for bureau numeric fields (data may be absent).
+- NEVER leave approveCondition blank. If a variable is not in the bureau or bank tables,
+  declare it as input.<variable_name> and write the rule using it.
+- Add "|| field == nil" for bureau and bank numeric fields (data may be absent).
 - For negative-list input fields use: 'input.field == "negative" || input.field == nil'
 - Reference HIT/NO-HIT as model.hit_no_hit (NOT as a bureau field).
 - Include the rule code (GPR01, PR01, etc.) in the name when present.
@@ -316,8 +497,9 @@ Extract every surrogate policy rule from the section below.
 Rules marked "Muted", "M", "Inactive", or "Not in force" get muted=true.
 
 UPSTREAM NODES AVAILABLE (in execution order before this ruleSet):
-  bureau.*                     → all bureau pull fields
-  input.*                      → all application input fields
+  bureau.*                     → all bureau pull fields (see Bureau Fields table)
+  bank.*                       → all bank statement fields (see Bank Fields table)
+  input.*                      → all application input fields (anything not in bureau or bank)
   model.hit_no_hit             → bool, from the "model" modelSet
   model.age_at_maturity        → number, from the "model" modelSet
   scorecard.<name>             → scorecard expression outputs (if scorecard exists)
@@ -335,7 +517,74 @@ For each rule output:
 }}
 
 Apply the same inversion and nil-check rules as for Go/No-Go rules.
+- NEVER leave approveCondition blank. If a variable is not in the bureau or bank tables,
+  declare it as input.<variable_name> and write the rule using it.
+- Add "|| field == nil" for bureau and bank numeric fields.
 Use model.<expr> to reference derived model values; do NOT invent new model.* names.
+
+Return ONLY a valid JSON array:
+[{{"name": "...", "approveCondition": "...", "cantDecideCondition": "", "muted": false}}]
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BUREAU CATEGORY RULESET PROMPT
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Human-readable descriptions for each bureau ruleset category
+BUREAU_CATEGORY_DESCRIPTIONS = {
+    "dpd_checks": "DPD (Days Past Due) based rules — max DPD thresholds and DPD count limits",
+    "bureau_score_checks": "Bureau score thresholds — CIBIL, Experian, Equifax, CRIF minimum score rules",
+    "outstanding_balance_checks": "Outstanding balance and overdue amount rules",
+    "enquiry_checks": "Credit enquiry count rules within specific lookback periods",
+    "written_off_settlement_checks": "Written-off, settled, restructured, DBT and LSS account rules",
+    "delinquency_flag_checks": "Delinquency flags — suit filed, wilful default, written-off indicators",
+    "credit_card_checks": "Credit card specific rules — utilization, CC outstanding, CC DPD",
+    "account_opening_checks": "New account opening and total account count rules",
+}
+
+
+def get_bureau_ruleset_prompt(section_content: str, ruleset_name: str) -> str:
+    description = BUREAU_CATEGORY_DESCRIPTIONS.get(
+        ruleset_name,
+        f"Bureau policy rules for category: {ruleset_name}"
+    )
+    return f"""
+{SYSTEM_PROMPT}
+
+Extract every policy rule from the section below. These rules belong to the "{ruleset_name}" ruleset.
+Category focus: {description}
+
+MUTED RULES: Rules marked "Muted", "M", "Inactive", or "Not in force" get muted=true.
+
+UPSTREAM NODES AVAILABLE (in execution order before this ruleSet):
+  bureau.*          → all bureau pull fields (use exact variable names from the Bureau Fields table)
+  bank.*            → all bank statement fields (see Bank Fields table)
+  input.*           → all application input fields (anything not in bureau or bank tables)
+  model.hit_no_hit  → true/false, computed in the "model" modelSet
+  model.age_at_maturity → number, computed in the "model" modelSet
+  scorecard.<name>  → if a scorecard modelSet exists, its expression outputs
+
+SECTION CONTENT:
+{section_content}
+
+For each rule output:
+{{
+  "name": "RULE_CODE: Short description",
+  "approveCondition": "expression — use bureau.*, bank.*, input.*, or model.<expr>",
+  "cantDecideCondition": "",
+  "muted": false
+}}
+
+MANDATORY:
+- INVERT every reject condition into an approve condition.
+- NEVER leave approveCondition blank. If a variable is not in the bureau or bank tables,
+  declare it as input.<variable_name> and write the rule using it.
+- Add "|| field == nil" for bureau and bank numeric fields (data may be absent).
+- Use exact bureau variable names from the Bureau Fields table (e.g. bureau.max_dpd_inlast12months).
+- Use exact bank variable names from the Bank Fields table (e.g. bank.abb, bank.ach_bounce_count_3mo).
+- Reference HIT/NO-HIT as model.hit_no_hit (NOT as a bureau field).
+- Include the rule code (e.g. GPR01, PR01, BR01) in the name when present.
 
 Return ONLY a valid JSON array:
 [{{"name": "...", "approveCondition": "...", "cantDecideCondition": "", "muted": false}}]
@@ -450,7 +699,8 @@ Choose the correct type for each expression.
 
 UPSTREAM NODES AVAILABLE (all run before the eligibility modelSet):
   bureau.*                          → raw bureau fields
-  input.*                           → application input fields
+  bank.*                            → bank statement fields (ABB, salary, bounce, EMI, etc.)
+  input.*                           → application input fields (anything not in bureau or bank)
   model.<expr>                      → e.g. model.hit_no_hit, model.age_at_maturity
   scorecard.<feature>               → scorecard expression outputs (if scorecard exists)
   go_no_go_checks.decision          → "pass"/"reject" (if go_no_go ruleSet exists)
@@ -491,7 +741,8 @@ Each feature becomes an expression in the "scorecard" modelSet node.
 
 UPSTREAM NODES AVAILABLE (all run before the scorecard modelSet):
   bureau.*   → raw bureau fields (use these as decisionTable/matrix input variables)
-  input.*    → application input fields
+  bank.*     → bank statement fields
+  input.*    → application input fields (anything not in bureau or bank tables)
 
 WITHIN THE SAME "scorecard" modelSet:
   Reference earlier expressions by bare name (no prefix).

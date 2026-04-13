@@ -3,13 +3,14 @@ Claude API client for extracting credit policy rules from document sections.
 Uses claude-opus-4-6 with adaptive thinking.
 """
 import json
-import os
 import re
 from typing import Any, Dict, List
 
 import anthropic
 
 from .prompts import (
+    BUREAU_CATEGORY_DESCRIPTIONS,
+    get_bureau_ruleset_prompt,
     get_classify_sections_prompt,
     get_eligibility_prompt,
     get_go_no_go_prompt,
@@ -17,16 +18,17 @@ from .prompts import (
     get_surrogate_policy_prompt,
 )
 
+# Section types that map to named bureau-category rulesets
+BUREAU_CATEGORY_TYPES = set(BUREAU_CATEGORY_DESCRIPTIONS.keys())
+
 
 class ClaudeClient:
     def __init__(self, api_key: str = "") -> None:
-        resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        if not resolved_key:
+        if not api_key:
             raise ValueError(
-                "No Anthropic API key provided. Set ANTHROPIC_API_KEY in .env "
-                "or supply it via the UI settings."
+                "No Anthropic API key provided. Enter your key via the app UI."
             )
-        self.client = anthropic.AsyncAnthropic(api_key=resolved_key)
+        self.client = anthropic.AsyncAnthropic(api_key=api_key)
         self.model = "claude-opus-4-6"
 
     # ─────────────────────────────────────────────────────────────────
@@ -99,6 +101,23 @@ class ClaudeClient:
         return []
 
     # ─────────────────────────────────────────────────────────────────
+    # Helpers
+    # ─────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sanitize_name(name: str) -> str:
+        """Convert a section heading into a valid snake_case node name.
+
+        "Go No Go Checks"  → "go_no_go_checks"
+        "DPD Rules Q1"     → "dpd_rules_q1"
+        """
+        import re as _re
+        name = name.lower().strip()
+        name = _re.sub(r'[^a-z0-9]+', '_', name)
+        name = name.strip('_')
+        return name or "policy_checks"
+
+    # ─────────────────────────────────────────────────────────────────
     # Name-based section classification fallback
     # ─────────────────────────────────────────────────────────────────
 
@@ -106,7 +125,24 @@ class ClaudeClient:
         result: Dict[str, str] = {}
         for s in sections:
             nl = s["name"].lower()
-            if any(k in nl for k in ["go no go", "go/no", "gng", "go_no_go"]):
+            if any(k in nl for k in ["dpd", "days past due"]):
+                result[s["name"]] = "dpd_checks"
+            elif any(k in nl for k in ["bureau score", "cibil score", "credit score", "score check",
+                                        "individual bureau", "bureau check"]):
+                result[s["name"]] = "bureau_score_checks"
+            elif any(k in nl for k in ["outstanding", "overdue", "balance"]):
+                result[s["name"]] = "outstanding_balance_checks"
+            elif any(k in nl for k in ["enquir", "inquiry"]):
+                result[s["name"]] = "enquiry_checks"
+            elif any(k in nl for k in ["written off", "write off", "written-off", "settlement", "dbt", "lss"]):
+                result[s["name"]] = "written_off_settlement_checks"
+            elif any(k in nl for k in ["suit filed", "wilful", "default flag"]):
+                result[s["name"]] = "delinquency_flag_checks"
+            elif any(k in nl for k in ["credit card", "cc check"]):
+                result[s["name"]] = "credit_card_checks"
+            elif any(k in nl for k in ["new account", "account opening", "account count"]):
+                result[s["name"]] = "account_opening_checks"
+            elif any(k in nl for k in ["go no go", "go/no", "gng", "go_no_go"]):
                 result[s["name"]] = "go_no_go"
             elif "surrogate" in nl:
                 result[s["name"]] = "surrogate_policy"
@@ -116,30 +152,47 @@ class ClaudeClient:
                 result[s["name"]] = "scorecard"
             elif any(k in nl for k in ["change", "history", "log", "version"]):
                 result[s["name"]] = "change_history"
-            elif any(k in nl for k in ["pre-read", "pre_read", "preread", "pre read", "introduction"]):
+            elif any(k in nl for k in ["pre-read", "pre_read", "preread", "pre read",
+                                        "introduction", "input payload", "1.1 "]):
                 result[s["name"]] = "pre_read"
             elif any(k in nl for k in ["exposure", "limit"]):
                 result[s["name"]] = "exposure"
             elif any(k in nl for k in ["common", "shared"]):
                 result[s["name"]] = "common_rules"
+            # Explicit skip types
+            elif any(k in nl for k in ["change history", "version history", "revision"]):
+                result[s["name"]] = "change_history"
             else:
-                result[s["name"]] = "metadata"
+                # For policy documents, unknown sections are most likely rule sections.
+                # Default to go_no_go so they are extracted rather than silently dropped.
+                result[s["name"]] = "go_no_go"
         return result
 
     # ─────────────────────────────────────────────────────────────────
     # Main extraction pipeline
     # ─────────────────────────────────────────────────────────────────
 
-    async def extract_all_sections(self, sections: List[Dict]) -> Dict[str, Any]:
+    async def extract_all_sections(self, sections: List[Dict], context: str = "") -> Dict[str, Any]:
         """
         Classify sections and extract rules / expressions from each.
 
+        Args:
+            sections: Parsed document sections.
+            context:  Optional free-text context from the user (e.g. loan type,
+                      key thresholds, special instructions) injected into every
+                      extraction prompt so Claude can follow specific guidance.
+
         Returns:
             {
-                "go_no_go_rules": [...],
+                "go_no_go_rules": [...],          # backward-compat generic go/no-go rules
                 "surrogate_rules": [...],
                 "eligibility_expressions": [...],
                 "scorecard_expressions": [...],
+                "named_rulesets": [               # categorized bureau rulesets (preferred)
+                    {"name": "dpd_checks", "rules": [...]},
+                    {"name": "bureau_score_checks", "rules": [...]},
+                    ...
+                ],
             }
         """
         result: Dict[str, Any] = {
@@ -147,7 +200,18 @@ class ClaudeClient:
             "surrogate_rules": [],
             "eligibility_expressions": [],
             "scorecard_expressions": [],
+            "named_rulesets": [],
         }
+
+        # Accumulate rules per named ruleset (maintains insertion order)
+        named_ruleset_map: Dict[str, List[Dict]] = {}
+
+        # Build context prefix to prepend to every extraction prompt
+        context_block = (
+            f"\n\nUSER-PROVIDED CONTEXT (follow these instructions while extracting rules):\n{context.strip()}\n"
+            if context and context.strip()
+            else ""
+        )
 
         # Step 1 — classify sections
         summary_lines = []
@@ -163,10 +227,16 @@ class ClaudeClient:
                 get_classify_sections_prompt("\n".join(summary_lines)), max_tokens=1024
             )
             section_types = self._parse_json(classify_resp)
+            print(f"[debug] classify raw: {classify_resp[:300]}")
+            print(f"[debug] section_types parsed: {section_types}")
             if not isinstance(section_types, dict):
+                print("[debug] classification not a dict, falling back to name-based")
                 section_types = self._classify_by_name(sections)
-        except Exception:
+        except Exception as exc:
+            print(f"[debug] classify exception: {exc}")
             section_types = self._classify_by_name(sections)
+
+        print(f"[debug] final section_types: {section_types}")
 
         # Step 2 — process each section
         skip_types = {"metadata", "pre_read", "change_history", "exposure"}
@@ -176,46 +246,58 @@ class ClaudeClient:
             stype = section_types.get(name, "metadata")
             text = section.get("text", "")
 
+            print(f"[debug] section '{name}' -> type='{stype}', text_len={len(text)}, skip={not text or stype in skip_types}")
+
             if not text or stype in skip_types:
                 continue
 
             # Truncate to avoid exceeding context limits
             text = text[:8000]
 
-            try:
-                if stype == "go_no_go":
-                    raw = await self._call(get_go_no_go_prompt(text), max_tokens=4096)
-                    rules = self._parse_json(raw)
-                    if isinstance(rules, list):
-                        result["go_no_go_rules"].extend(rules)
+            def _inject(prompt: str) -> str:
+                """Append the user context block to a prompt string."""
+                return prompt + context_block
 
-                elif stype == "surrogate_policy":
-                    raw = await self._call(get_surrogate_policy_prompt(text), max_tokens=4096)
+            # Ruleset key = sanitized section heading (e.g. "DPD Rules" → "dpd_rules")
+            rs_key = self._sanitize_name(name)
+
+            try:
+                if stype in BUREAU_CATEGORY_TYPES or stype in {"go_no_go", "surrogate_policy", "common_rules"}:
+                    # Pick the right extraction prompt based on section type
+                    if stype in BUREAU_CATEGORY_TYPES:
+                        prompt = get_bureau_ruleset_prompt(text, stype)
+                    elif stype == "surrogate_policy":
+                        prompt = get_surrogate_policy_prompt(text)
+                    else:
+                        prompt = get_go_no_go_prompt(text)
+
+                    raw = await self._call(_inject(prompt), max_tokens=4096)
                     rules = self._parse_json(raw)
-                    if isinstance(rules, list):
-                        result["surrogate_rules"].extend(rules)
+                    print(f"[debug] section '{name}': raw_len={len(raw)}, rules_count={len(rules) if isinstance(rules, list) else 'not-a-list'}, raw_preview={raw[:200]}")
+                    if isinstance(rules, list) and rules:
+                        named_ruleset_map.setdefault(rs_key, []).extend(rules)
 
                 elif stype == "eligibility":
-                    raw = await self._call(get_eligibility_prompt(text), max_tokens=4096)
+                    raw = await self._call(_inject(get_eligibility_prompt(text)), max_tokens=4096)
                     exprs = self._parse_json(raw)
                     if isinstance(exprs, list):
                         result["eligibility_expressions"].extend(exprs)
 
                 elif stype == "scorecard":
-                    raw = await self._call(get_scorecard_prompt(text), max_tokens=8192)
+                    raw = await self._call(_inject(get_scorecard_prompt(text)), max_tokens=8192)
                     exprs = self._parse_json(raw)
                     if isinstance(exprs, list):
                         result["scorecard_expressions"].extend(exprs)
 
-                elif stype == "common_rules":
-                    # Treat shared rules as go_no_go
-                    raw = await self._call(get_go_no_go_prompt(text), max_tokens=4096)
-                    rules = self._parse_json(raw)
-                    if isinstance(rules, list):
-                        result["go_no_go_rules"].extend(rules)
-
             except Exception as exc:
                 print(f"[warn] Error processing section '{name}': {exc}")
+                import traceback; traceback.print_exc()
                 continue
+
+        # Build the ordered named_rulesets list from accumulated map
+        result["named_rulesets"] = [
+            {"name": rs_name, "rules": rules}
+            for rs_name, rules in named_ruleset_map.items()
+        ]
 
         return result

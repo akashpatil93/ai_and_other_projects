@@ -13,24 +13,22 @@ type ReviewTab = 'json' | 'rules'
 export default function App() {
   const [step, setStep] = useState<Step>('upload')
   const [status, setStatus] = useState('Uploading document...')
-  const [fileId, setFileId] = useState<string | null>(null)
   const [workflowId, setWorkflowId] = useState<string | null>(null)
   const [workflow, setWorkflow] = useState<WorkflowData | null>(null)
   const [validation, setValidation] = useState<ValidationResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [reviewTab, setReviewTab] = useState<ReviewTab>('json')
   const [saving, setSaving] = useState(false)
-  const [showKeyModal, setShowKeyModal] = useState(false)
+  const [showKeyModal, setShowKeyModal] = useState(() => !keyStore.get())
   const [hasKey, setHasKey] = useState(() => Boolean(keyStore.get()))
 
-  const handleFileUpload = async (file: File) => {
+  const handleFileUpload = async (file: File, context: string) => {
     setError(null)
     setStep('generating')
 
     try {
       setStatus('Uploading document...')
       const uploaded = await apiClient.uploadFile(file)
-      setFileId(uploaded.file_id)
 
       setStatus('Parsing sheets & sections...')
       await apiClient.parseFile(uploaded.file_id)
@@ -39,7 +37,7 @@ export default function App() {
       await new Promise((r) => setTimeout(r, 600))
 
       setStatus('Extracting rules with Claude AI...')
-      const result = await apiClient.generateWorkflow(uploaded.file_id)
+      const result = await apiClient.generateWorkflow(uploaded.file_id, context)
 
       setWorkflowId(result.workflow_id)
       setWorkflow(result.workflow)
@@ -77,7 +75,6 @@ export default function App() {
 
   const handleReset = () => {
     setStep('upload')
-    setFileId(null)
     setWorkflowId(null)
     setWorkflow(null)
     setValidation(null)

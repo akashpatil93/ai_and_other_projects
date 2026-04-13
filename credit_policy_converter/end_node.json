@@ -1,0 +1,23 @@
+{
+  "_comment": "Reference structure for BRE end nodes. The decisionNode.output must be a JSON string containing every key declared in output.json.",
+  "approved_example": {
+    "type": "end",
+    "name": "end_approved",
+    "endNodeName": "approved",
+    "tag": "<uuid>",
+    "decisionNode": {
+      "output": "{\"decision\":\"approved\",\"amount\":0,\"interest_rate\":0,\"tenure\":0,\"emi\":0,\"foir\":0}"
+    },
+    "metadata": {"x": 1500, "y": -320, "nodeColor": 3}
+  },
+  "rejected_example": {
+    "type": "end",
+    "name": "end_rejected",
+    "endNodeName": "rejected",
+    "tag": "<uuid>",
+    "decisionNode": {
+      "output": "{\"decision\":\"rejected\",\"amount\":0,\"interest_rate\":0,\"tenure\":0,\"emi\":0,\"foir\":0}"
+    },
+    "metadata": {"x": 1500, "y": 320, "nodeColor": 2}
+  }
+}

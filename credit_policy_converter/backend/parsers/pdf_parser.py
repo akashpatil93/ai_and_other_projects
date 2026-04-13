@@ -1,12 +1,17 @@
 """PDF document parser for credit policy documents using PyMuPDF."""
 import re
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def parse_pdf(file_path: str) -> List[Dict[str, Any]]:
     """
-    Parse a PDF file and return text sections.
-    Falls back to a single section if structure cannot be detected.
+    Parse a PDF and return a list of named sections suitable for Claude extraction.
+
+    Splitting strategy (tried in order, first one that produces >1 section wins):
+      1. "Rule set name:" bullet lines  → one section per ruleset (best for trigger/policy PDFs)
+      2. Numbered headings (1.1, 2.3 …) → one section per heading
+      3. ALL-CAPS lines                 → legacy fallback
+      4. Entire document as one section → last resort
     """
     try:
         import fitz  # PyMuPDF
@@ -24,40 +29,141 @@ def parse_pdf(file_path: str) -> List[Dict[str, Any]]:
     if not full_text.strip():
         return []
 
-    # Try to detect section boundaries by common heading patterns
-    heading_pattern = re.compile(
-        r'\n([A-Z][A-Z &/\-]{3,50})\n',
-        re.MULTILINE,
+    # ── Strategy 1: "Rule set name:" lines ───────────────────────────────────
+    sections = _split_by_ruleset_name(full_text)
+    if sections:
+        return sections
+
+    # ── Strategy 2: numbered headings (1.1, 2.3, A.1 …) ─────────────────────
+    sections = _split_by_numbered_headings(full_text)
+    if sections:
+        return sections
+
+    # ── Strategy 3: ALL-CAPS lines ────────────────────────────────────────────
+    sections = _split_by_allcaps(full_text)
+    if sections:
+        return sections
+
+    # ── Strategy 4: single fallback section ──────────────────────────────────
+    return [{
+        "name": "Policy Document",
+        "headers": ["Content"],
+        "rows": [{"Content": full_text}],
+        "text": f"=== Policy Document ===\n{full_text[:8000]}",
+        "row_count": 1,
+    }]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Splitting helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_section(name: str, text: str) -> Optional[Dict[str, Any]]:
+    """Return a section dict or None if the text is too short to be useful."""
+    text = text.strip()
+    if not text or len(text) < 40:
+        return None
+    return {
+        "name": name,
+        "headers": ["Content"],
+        "rows": [{"Content": text}],
+        "text": f"=== {name} ===\n{text[:8000]}",
+        "row_count": 1,
+    }
+
+
+def _split_by_ruleset_name(full_text: str) -> List[Dict[str, Any]]:
+    """
+    Split on lines that contain 'Rule set name' (case-insensitive).
+    Each such line starts a new named section.
+    Lines like:
+        ● Rule set name: Location Strategy
+        Rule set name : Negative Databases
+    """
+    # Match optional bullet + "Rule set name" + optional spaces/colon + the name
+    pattern = re.compile(
+        r'(?:^|[\n\r])[ \t]*[●•\-*]?[ \t]*Rule\s+set\s+name\s*[:\-]\s*(.+)',
+        re.IGNORECASE,
     )
 
-    splits: List[tuple] = [("Introduction", 0)]
-    for match in heading_pattern.finditer(full_text):
-        name = match.group(1).strip()
-        # Filter out noise (all caps lines that are too long or too short)
+    splits: List[Tuple[str, int]] = []
+    for m in pattern.finditer(full_text):
+        rs_name = m.group(1).strip().rstrip("*")
+        if rs_name:
+            splits.append((rs_name, m.start()))
+
+    if not splits:
+        return []
+
+    # Everything before the first ruleset = preamble (metadata/input payload)
+    sections = []
+    preamble_end = splits[0][1]
+    preamble = full_text[:preamble_end].strip()
+    if preamble and len(preamble) > 80:
+        sec = _make_section("Input Payload", preamble)
+        if sec:
+            sections.append(sec)
+
+    for i, (name, start) in enumerate(splits):
+        end = splits[i + 1][1] if i + 1 < len(splits) else len(full_text)
+        text = full_text[start:end]
+        sec = _make_section(name, text)
+        if sec:
+            sections.append(sec)
+
+    return sections
+
+
+def _split_by_numbered_headings(full_text: str) -> List[Dict[str, Any]]:
+    """
+    Split on numbered section headings like:
+        1.1 Input Payload
+        1.2 Rules to be Executed
+        2. Credit Checks
+    """
+    pattern = re.compile(
+        r'(?:^|[\n\r])((?:\d+\.)+\d*\s+[A-Za-z].{3,60})(?:\n|$)',
+    )
+
+    splits: List[Tuple[str, int]] = []
+    for m in pattern.finditer(full_text):
+        name = m.group(1).strip()
+        splits.append((name, m.start()))
+
+    if len(splits) < 2:
+        return []
+
+    sections = []
+    for i, (name, start) in enumerate(splits):
+        end = splits[i + 1][1] if i + 1 < len(splits) else len(full_text)
+        text = full_text[start:end]
+        sec = _make_section(name, text)
+        if sec:
+            sections.append(sec)
+
+    return sections
+
+
+def _split_by_allcaps(full_text: str) -> List[Dict[str, Any]]:
+    """Original strategy: split on ALL-CAPS heading lines."""
+    heading_pattern = re.compile(r'\n([A-Z][A-Z &/\-]{3,50})\n', re.MULTILINE)
+
+    splits: List[Tuple[str, int]] = [("Introduction", 0)]
+    for m in heading_pattern.finditer(full_text):
+        name = m.group(1).strip()
         if 5 <= len(name) <= 60:
-            splits.append((name, match.start()))
+            splits.append((name, m.start()))
+
+    if len(splits) < 2:
+        return []
 
     sections = []
     for i, (name, start) in enumerate(splits):
         end = splits[i + 1][1] if i + 1 < len(splits) else len(full_text)
         text = full_text[start:end].strip()
         if text and len(text) > 80:
-            sections.append({
-                "name": name,
-                "headers": ["Content"],
-                "rows": [{"Content": text}],
-                "text": f"=== {name} ===\n{text[:6000]}",
-                "row_count": 1,
-            })
-
-    if not sections:
-        # Single fallback section
-        sections = [{
-            "name": "Policy Document",
-            "headers": ["Content"],
-            "rows": [{"Content": full_text}],
-            "text": f"=== Policy Document ===\n{full_text[:8000]}",
-            "row_count": 1,
-        }]
+            sec = _make_section(name, text)
+            if sec:
+                sections.append(sec)
 
     return sections

@@ -23,6 +23,10 @@ def _uuid() -> str:
 # Node builders
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _has_cant_decide(rules: List[Dict]) -> bool:
+    return any(r.get("cantDecideCondition", "").strip() for r in rules)
+
+
 def _ruleset(name: str, x: int, y: int, rules: List[Dict], switch_name: str) -> Dict:
     rule_objs = [
         {
@@ -31,6 +35,7 @@ def _ruleset(name: str, x: int, y: int, rules: List[Dict], switch_name: str) -> 
             "seqNo": i,
             "approveCondition": r.get("approveCondition", "true"),
             "cantDecideCondition": r.get("cantDecideCondition", ""),
+            "muted": _is_muted(r),
             "tag": _uuid(),
         }
         for i, r in enumerate(rules)
@@ -116,20 +121,46 @@ def _switch(name: str, conditions: List[Dict]) -> Dict:
 # Main assembler
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _is_muted(rule: Dict) -> bool:
+    """Type-safe muted check — handles bool, string 'true'/'false', int, or missing."""
+    val = rule.get("muted", False)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes")
+    return bool(val)
+
+
 def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
     """Build the complete workflow JSON from Claude-extracted data."""
 
-    # ── Separate muted vs active rules ───────────────────────────────
+    # ── Build the ordered list of rulesets ───────────────────────────
+    # Each entry: {"name": str, "rules": [...all rules including muted ones...]}
+    # Muted rules are identified by muted=true on the individual rule object —
+    # no separate muted_<name> nodes are created.
+    raw_named = extracted.get("named_rulesets", [])
+    all_rulesets: List[Dict] = [
+        {"name": rs.get("name", "bureau_checks"), "rules": rs.get("rules", [])}
+        for rs in raw_named
+        if rs.get("rules")
+    ]
+
+    # Backward-compat: absorb any generic go_no_go / surrogate rules
     all_gng = extracted.get("go_no_go_rules", [])
-    gng_muted = [r for r in all_gng if r.get("muted", False)]
-    gng_active = [r for r in all_gng if not r.get("muted", False)]
+    if all_gng:
+        all_rulesets.append({"name": "go_no_go_checks", "rules": all_gng})
 
     all_sp = extracted.get("surrogate_rules", [])
-    sp_muted = [r for r in all_sp if r.get("muted", False)]
-    sp_active = [r for r in all_sp if not r.get("muted", False)]
+    if all_sp:
+        all_rulesets.append({"name": "surrogate_policy_checks", "rules": all_sp})
 
     elig_exprs = extracted.get("eligibility_expressions", [])
     scorecard_exprs = extracted.get("scorecard_expressions", [])
+
+    # For the final_decision approve condition, a ruleset "counts" only if it
+    # has at least one non-muted rule.
+    def _has_active_rules(rs: Dict) -> bool:
+        return any(not _is_muted(r) for r in rs.get("rules", []))
 
     # ── Layout constants ──────────────────────────────────────────────
     # Switch nodes are invisible routing nodes — they carry no metadata.
@@ -171,113 +202,136 @@ def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
     nodes: List[Dict] = []
 
     # ── 1. Start  (x=0, y=0) ─────────────────────────────────────────
-    bureau_name = "Source_Node_Bureau"
+    datasource_name = "Source_Node"
     nodes.append({
         "type": "start",
         "name": "Start",
         "metadata": {"x": place(BASE_NARROW), "y": Y_MAIN, "nodeColor": 1},
-        "nextState": {"name": bureau_name, "type": "dataSource"},
+        "nextState": {"name": datasource_name, "type": "dataSource"},
     })
 
-    # ── 2. DataSource — bureau ────────────────────────────────────────
-    after_bureau = (
+    # ── 3–4. Scorecard + Model modelSets ─────────────────────────────
+    # Scan only the approveCondition / cantDecideCondition fields of every extracted
+    # rule for explicit cross-node references (model.hit_no_hit, model.age_at_maturity).
+    # Searching str(extracted) is too broad — the expression names appear in prompts
+    # and rule names, causing the model node to always be emitted.
+    def _collect_conditions(obj: Any) -> str:
+        """Recursively collect all condition strings from the extracted dict."""
+        if isinstance(obj, str):
+            return obj
+        if isinstance(obj, list):
+            return " ".join(_collect_conditions(i) for i in obj)
+        if isinstance(obj, dict):
+            return " ".join(
+                _collect_conditions(v)
+                for k, v in obj.items()
+                if k in ("approveCondition", "cantDecideCondition", "condition")
+            )
+        return ""
+
+    _conditions_text = _collect_conditions(extracted)
+    _has_bank_vars = bool(re.search(r"\bbank\.", _conditions_text))
+
+    model_exprs = []
+    if "model.hit_no_hit" in _conditions_text:
+        model_exprs.append(
+            {"name": "hit_no_hit", "condition": "bureau.bureauscore != nil", "type": "expression"}
+        )
+    if "model.age_at_maturity" in _conditions_text:
+        model_exprs.append(
+            {"name": "age_at_maturity", "condition": "input.age + 3", "type": "expression"}
+        )
+
+    def first_after_model() -> Dict:
+        if all_rulesets:
+            return {"name": all_rulesets[0]["name"], "type": "ruleSet"}
+        return {"name": "final_decision", "type": "branch"}
+
+    # What does the dataSource flow into?
+    after_datasource = (
         {"name": "scorecard", "type": "modelSet"}
         if scorecard_exprs
-        else {"name": "model", "type": "modelSet"}
+        else ({"name": "model", "type": "modelSet"} if model_exprs else first_after_model())
     )
+
+    # What does the last pre-ruleset node (scorecard or model) flow into?
+    if model_exprs:
+        after_scorecard = {"name": "model", "type": "modelSet"}
+    else:
+        after_scorecard = first_after_model()
+
+    # ── 2. DataSource — bureau + bank (if needed) in one node ────────
+    sources = [{"name": "bureau", "id": 41238, "seqNo": 0, "type": "finboxSource", "tag": _uuid()}]
+    if _has_bank_vars:
+        sources.append({"name": "bank", "id": 41239, "seqNo": 1, "type": "finboxSource", "tag": _uuid()})
+
     nodes.append({
         "type": "dataSource",
-        "name": bureau_name,
+        "name": datasource_name,
         "tag": _uuid(),
-        "sources": [{"name": "bureau", "id": 41238, "seqNo": 0, "type": "finboxSource", "tag": _uuid()}],
+        "sources": sources,
         "metadata": {"x": place(BASE_NARROW), "y": Y_MAIN, "nodeColor": 1},
-        "nextState": after_bureau,
+        "nextState": after_datasource,
     })
 
-    # ── 3. Scorecard modelSet ─────────────────────────────────────────
     if scorecard_exprs:
         nodes.append(_modelset(
             "scorecard", place(BASE_MEDIUM), Y_MAIN, scorecard_exprs,
-            next_state={"name": "model", "type": "modelSet"},
+            next_state=after_scorecard,
         ))
 
-    # ── 4. Model modelSet ─────────────────────────────────────────────
-    model_exprs = [
-        {"name": "hit_no_hit", "condition": "bureau.bureauscore != nil", "type": "expression"},
-        {"name": "age_at_maturity", "condition": "input.age + 3", "type": "expression"},
-    ]
+    if model_exprs:
+        nodes.append(_modelset("model", place(BASE_MEDIUM), Y_MAIN, model_exprs, next_state=first_after_model()))
 
-    def first_after_model() -> Dict:
-        if gng_muted:
-            return {"name": "muted_go_no_go_checks", "type": "ruleSet"}
-        if gng_active:
-            return {"name": "go_no_go_checks", "type": "ruleSet"}
-        if sp_muted:
-            return {"name": "muted_surrogate_policy_checks", "type": "ruleSet"}
-        if sp_active:
-            return {"name": "surrogate_policy_checks", "type": "ruleSet"}
-        return {"name": "final_decision", "type": "branch"}
+    def _muted_switch(sw_name: str, rules: List[Dict], forward: Dict) -> Dict:
+        """Muted ruleSets: pass and reject both continue forward. cantDecide too if present."""
+        conditions = [
+            {"name": "pass",   "nextState": forward},
+            {"name": "reject", "nextState": forward},
+        ]
+        if _has_cant_decide(rules):
+            conditions.append({"name": "cantDecide", "nextState": forward})
+        return _switch(sw_name, conditions)
 
-    nodes.append(_modelset("model", place(BASE_MEDIUM), Y_MAIN, model_exprs, next_state=first_after_model()))
-
-    # ── 5. Muted Go/No-Go ─────────────────────────────────────────────
-    if gng_muted:
-        sw = "muted_go_no_go_checks-switch"
-        next_rs = (
-            {"name": "go_no_go_checks", "type": "ruleSet"} if gng_active else
-            {"name": "muted_surrogate_policy_checks", "type": "ruleSet"} if sp_muted else
-            {"name": "surrogate_policy_checks", "type": "ruleSet"} if sp_active else
-            {"name": "final_decision", "type": "branch"}
-        )
-        nodes.append(_ruleset("muted_go_no_go_checks", place(ruleset_width(gng_muted)), Y_MAIN, gng_muted, sw))
-        nodes.append(_switch(sw, [
-            {"name": "pass",   "nextState": next_rs},
-            {"name": "reject", "nextState": next_rs},
-        ]))
-
-    # ── 6. Active Go/No-Go ────────────────────────────────────────────
-    if gng_active:
-        sw = "go_no_go_checks-switch"
-        pass_next = (
-            {"name": "muted_surrogate_policy_checks", "type": "ruleSet"} if sp_muted else
-            {"name": "surrogate_policy_checks", "type": "ruleSet"} if sp_active else
-            {"name": "final_decision", "type": "branch"}
-        )
-        nodes.append(_ruleset("go_no_go_checks", place(ruleset_width(gng_active)), Y_MAIN, gng_active, sw))
-        nodes.append(_switch(sw, [
+    def _active_switch(sw_name: str, rules: List[Dict], pass_next: Dict) -> Dict:
+        """Active ruleSets: pass continues, reject/cantDecide go to end_rejected."""
+        conditions = [
             {"name": "pass",   "nextState": pass_next},
             {"name": "reject", "nextState": {"name": END_REJECTED, "type": "end"}},
-        ]))
+        ]
+        if _has_cant_decide(rules):
+            conditions.append({"name": "cantDecide", "nextState": {"name": END_REJECTED, "type": "end"}})
+        return _switch(sw_name, conditions)
 
-    # ── 7. Muted Surrogate ────────────────────────────────────────────
-    if sp_muted:
-        sw = "muted_surrogate_policy_checks-switch"
-        next_rs = (
-            {"name": "surrogate_policy_checks", "type": "ruleSet"} if sp_active else
-            {"name": "final_decision", "type": "branch"}
-        )
-        nodes.append(_ruleset("muted_surrogate_policy_checks", place(ruleset_width(sp_muted)), Y_MAIN, sp_muted, sw))
-        nodes.append(_switch(sw, [
-            {"name": "pass",   "nextState": next_rs},
-            {"name": "reject", "nextState": next_rs},
-        ]))
+    # ── 5–8. Chain all rulesets in order ─────────────────────────────
+    for i, rs in enumerate(all_rulesets):
+        rs_name = rs["name"]
+        rules = rs["rules"]
+        sw = f"{rs_name}-switch"
 
-    # ── 8. Active Surrogate ───────────────────────────────────────────
-    if sp_active:
-        sw = "surrogate_policy_checks-switch"
-        nodes.append(_ruleset("surrogate_policy_checks", place(ruleset_width(sp_active)), Y_MAIN, sp_active, sw))
-        nodes.append(_switch(sw, [
-            {"name": "pass",   "nextState": {"name": "final_decision", "type": "branch"}},
-            {"name": "reject", "nextState": {"name": END_REJECTED, "type": "end"}},
-        ]))
+        # Determine what comes after this ruleset
+        if i + 1 < len(all_rulesets):
+            next_node = {"name": all_rulesets[i + 1]["name"], "type": "ruleSet"}
+        else:
+            next_node = {"name": "final_decision", "type": "branch"}
+
+        nodes.append(_ruleset(rs_name, place(ruleset_width(rules)), Y_MAIN, rules, sw))
+
+        # If all rules in this node are muted it can never truly reject — treat
+        # it as a pass-through; otherwise active logic applies.
+        if _has_active_rules(rs):
+            nodes.append(_active_switch(sw, rules, next_node))
+        else:
+            nodes.append(_muted_switch(sw, rules, next_node))
 
     # ── 9. Final Decision branch ──────────────────────────────────────
     fd_sw = "final_decision-switch"
-    parts = []
-    if gng_active:
-        parts.append('go_no_go_checks.decision == "pass"')
-    if sp_active:
-        parts.append('surrogate_policy_checks.decision == "pass"')
+    # Approve condition references only rulesets that have at least one active rule
+    parts = [
+        f'{rs["name"]}.decision == "pass"'
+        for rs in all_rulesets
+        if _has_active_rules(rs)
+    ]
     approve_cond = " and ".join(parts) if parts else "true"
 
     nodes.append({
@@ -311,13 +365,37 @@ def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
 
     # ── 11. End nodes ─────────────────────────────────────────────────
     # Both end nodes share the same x (final column), offset vertically.
+    # decisionNode.output must include every key from the outputs array.
+    import json as _json
+
+    outputs = [
+        {"name": "decision",      "dataType": "text"},
+        {"name": "amount",        "dataType": "number"},
+        {"name": "interest_rate", "dataType": "number"},
+        {"name": "tenure",        "dataType": "number"},
+        {"name": "emi",           "dataType": "number"},
+        {"name": "foir",          "dataType": "number"},
+    ]
+
+    def _end_output(terminal: str) -> str:
+        """Build decisionNode output JSON containing every declared output field."""
+        obj: Dict[str, Any] = {}
+        for out in outputs:
+            if out["name"] == "decision":
+                obj["decision"] = terminal          # "approved" or "rejected"
+            elif out["dataType"] == "number":
+                obj[out["name"]] = 0
+            else:
+                obj[out["name"]] = ""
+        return _json.dumps(obj)
+
     end_x = x_cursor   # x_cursor already points past the last node
     nodes.append({
         "type": "end",
         "name": END_APPROVED,
         "endNodeName": "approved",
         "tag": _uuid(),
-        "decisionNode": {"output": '{"decision": "approved"}'},
+        "decisionNode": {"output": _end_output("approved")},
         "metadata": {"x": end_x, "y": Y_APPROVED, "nodeColor": 3},
     })
     nodes.append({
@@ -325,7 +403,7 @@ def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
         "name": END_REJECTED,
         "endNodeName": "rejected",
         "tag": _uuid(),
-        "decisionNode": {"output": '{"decision": "rejected"}'},
+        "decisionNode": {"output": _end_output("rejected")},
         "metadata": {"x": end_x, "y": Y_REJECTED, "nodeColor": 2},
     })
 
@@ -335,37 +413,72 @@ def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "nodes": nodes,
         "inputs": inputs,
-        "outputs": [
-            {"name": "decision", "dataType": "text"},
-            {"name": "amount",   "dataType": "number"},
-        ],
+        "outputs": outputs,
         "settings": {
-            "name": "Credit Policy Workflow",
-            "version": "1.0.0",
-            "description": "Auto-generated from credit policy document",
+            "isNullableInputsAllowed": True,
+            "continueEvalWithDataSourceErr": False,
+            "isRejectionBasedRulesetEnable": False,
         },
     }
 
 
 def _build_inputs(nodes: List[Dict]) -> List[Dict]:
-    """Scan all node expressions for input.* references and build the inputs array."""
-    serialised = str(nodes)
-    vars_found = set(re.findall(r"input\.([a-zA-Z_][a-zA-Z0-9_]*)", serialised))
+    """Scan all node expressions and build the inputs array.
 
-    numeric = {
+    - input.* variables → scalar inputs (text or number)
+    - bank.* variables  → single object input with children (one per referenced field)
+    - bureau.* variables come from the dataSource node and are NOT listed in inputs
+    """
+    serialised = str(nodes)
+
+    # ── scalar input.* fields ─────────────────────────────────────────
+    input_vars = set(re.findall(r"input\.([a-zA-Z_][a-zA-Z0-9_]*)", serialised))
+
+    numeric_inputs = {
         "age", "business_vintage", "req_loan_amount", "loan_amount",
         "income", "emi", "abb", "foir", "credit_limit",
     }
 
-    return [
+    scalar_inputs = [
         {
             "id": _uuid(),
             "name": v,
-            "dataType": "number" if v in numeric else "text",
+            "dataType": "number" if v in numeric_inputs else "text",
             "isNullable": True,
             "defaultInput": "",
             "is_array": False,
             "schema": None,
         }
-        for v in sorted(vars_found)
+        for v in sorted(input_vars)
     ]
+
+    # ── bank object input (when bank.* fields are referenced) ─────────
+    bank_vars = sorted(set(re.findall(r"bank\.([a-zA-Z_][a-zA-Z0-9_]*)", serialised)))
+    if bank_vars:
+        # All bank fields are numeric (counts, amounts, ratios, percentages)
+        bank_children = [
+            {
+                "id": _uuid(),
+                "name": field,
+                "dataType": "number",
+                "isNullable": True,
+                "defaultInput": None,
+                "is_array": False,
+                "schema": None,
+            }
+            for field in bank_vars
+        ]
+        bank_input: List[Dict] = [{
+            "id": _uuid(),
+            "name": "bank",
+            "dataType": "object",
+            "isNullable": False,
+            "defaultInput": None,
+            "is_array": True,
+            "schema": None,
+            "children": bank_children,
+        }]
+    else:
+        bank_input = []
+
+    return bank_input + scalar_inputs

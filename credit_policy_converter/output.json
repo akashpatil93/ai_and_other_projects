@@ -1,0 +1,8 @@
+[
+  {"name": "decision",      "dataType": "text"},
+  {"name": "amount",        "dataType": "number"},
+  {"name": "interest_rate", "dataType": "number"},
+  {"name": "tenure",        "dataType": "number"},
+  {"name": "emi",           "dataType": "number"},
+  {"name": "foir",          "dataType": "number"}
+]

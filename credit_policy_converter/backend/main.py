@@ -27,7 +27,7 @@ app = FastAPI(title="Credit Policy Converter API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,8 +41,8 @@ workflows_store: Dict[str, Dict] = {}
 
 
 def _get_client(header_key: str) -> ClaudeClient:
-    """Resolve API key: request header takes priority, then .env / env var."""
-    return ClaudeClient(api_key=header_key or os.environ.get("ANTHROPIC_API_KEY", ""))
+    """Build a ClaudeClient using only the key sent by the frontend."""
+    return ClaudeClient(api_key=header_key)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,6 +55,7 @@ class ParseRequest(BaseModel):
 
 class GenerateRequest(BaseModel):
     file_id: str
+    context: str = ""
 
 
 class UpdateWorkflowRequest(BaseModel):
@@ -65,6 +66,11 @@ class UpdateWorkflowRequest(BaseModel):
 # Routes
 # ─────────────────────────────────────────────────────────────────────────────
 
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "Credit Policy Converter API", "docs": "/docs"}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -73,7 +79,7 @@ def health():
 @app.post("/api/verify-key")
 async def verify_key(x_anthropic_key: str = Header(default="")):
     """Lightweight check: confirm the key is non-empty and looks structurally valid."""
-    key = x_anthropic_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    key = x_anthropic_key
     if not key:
         raise HTTPException(400, detail="No API key provided.")
     if not key.startswith("sk-ant-"):
@@ -197,7 +203,7 @@ async def generate_workflow(
 
     try:
         claude_client = _get_client(x_anthropic_key)
-        extracted = await claude_client.extract_all_sections(sections)
+        extracted = await claude_client.extract_all_sections(sections, context=request.context)
         workflow = assemble_workflow(extracted)
         validation = validate_workflow(workflow)
 
