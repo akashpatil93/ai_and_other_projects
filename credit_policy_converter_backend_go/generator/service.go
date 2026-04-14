@@ -164,7 +164,10 @@ func (s *svc) ExtractAllSections(ctx context.Context, sections []Section, userCo
 	}
 
 	namedRulesetMap := make(map[string][]map[string]interface{})
+	namedRulesetOrder := []string{} // tracks insertion order for deterministic output
+
 	namedModelsetMap := make(map[string][]map[string]interface{})
+	namedModelsetOrder := []string{} // tracks insertion order for deterministic output
 
 	// Build context prefix
 	contextBlock := ""
@@ -266,6 +269,9 @@ func (s *svc) ExtractAllSections(ctx context.Context, sections []Section, userCo
 			}
 			parsed := extractJSON(raw)
 			if rules, ok := toSliceOfMaps(parsed); ok && len(rules) > 0 {
+				if _, exists := namedRulesetMap[rsKey]; !exists {
+					namedRulesetOrder = append(namedRulesetOrder, rsKey)
+				}
 				namedRulesetMap[rsKey] = append(namedRulesetMap[rsKey], rules...)
 			}
 
@@ -277,6 +283,9 @@ func (s *svc) ExtractAllSections(ctx context.Context, sections []Section, userCo
 			}
 			parsed := extractJSON(raw)
 			if exprs, ok := toSliceOfMaps(parsed); ok && len(exprs) > 0 {
+				if _, exists := namedModelsetMap[rsKey]; !exists {
+					namedModelsetOrder = append(namedModelsetOrder, rsKey)
+				}
 				namedModelsetMap[rsKey] = append(namedModelsetMap[rsKey], exprs...)
 			}
 
@@ -304,12 +313,12 @@ func (s *svc) ExtractAllSections(ctx context.Context, sections []Section, userCo
 		}
 	}
 
-	// Build ordered named rulesets / modelsets
-	for rsName, rules := range namedRulesetMap {
-		result.NamedRulesets = append(result.NamedRulesets, NamedRuleset{Name: rsName, Rules: rules})
+	// Build ordered named rulesets / modelsets (preserving document section order)
+	for _, rsName := range namedRulesetOrder {
+		result.NamedRulesets = append(result.NamedRulesets, NamedRuleset{Name: rsName, Rules: namedRulesetMap[rsName]})
 	}
-	for msName, exprs := range namedModelsetMap {
-		result.NamedModelsets = append(result.NamedModelsets, NamedModelset{Name: msName, Expressions: exprs})
+	for _, msName := range namedModelsetOrder {
+		result.NamedModelsets = append(result.NamedModelsets, NamedModelset{Name: msName, Expressions: namedModelsetMap[msName]})
 	}
 
 	return result, nil
@@ -542,14 +551,11 @@ func (s *svc) AssembleWorkflow(extracted *ExtractedData, samplePayload string) m
 		"nextState": map[string]interface{}{"type": "switch", "name": fdSw},
 	})
 
-	endApprovedID := newID()
-	endRejectedID := newID()
-
 	var approvePath map[string]interface{}
 	if len(eligExprs) > 0 {
 		approvePath = map[string]interface{}{"name": "eligibility", "type": "modelSet"}
 	} else {
-		approvePath = map[string]interface{}{"name": endApprovedID, "type": "end"}
+		approvePath = map[string]interface{}{"name": "end_approved", "type": "end"}
 	}
 
 	nodes = append(nodes, map[string]interface{}{
@@ -557,7 +563,7 @@ func (s *svc) AssembleWorkflow(extracted *ExtractedData, samplePayload string) m
 		"name": fdSw,
 		"dataConditions": []interface{}{
 			map[string]interface{}{"name": "approve", "nextState": approvePath},
-			map[string]interface{}{"name": "reject", "nextState": map[string]interface{}{"name": endRejectedID, "type": "end"}},
+			map[string]interface{}{"name": "reject", "nextState": map[string]interface{}{"name": "end_rejected", "type": "end"}},
 		},
 	})
 
@@ -565,31 +571,27 @@ func (s *svc) AssembleWorkflow(extracted *ExtractedData, samplePayload string) m
 	if len(eligExprs) > 0 {
 		nodes = append(nodes, buildModelSet(
 			"eligibility", place(baseMedium), yMain, eligExprs,
-			map[string]interface{}{"name": endApprovedID, "type": "end"},
+			map[string]interface{}{"name": "end_approved", "type": "end"},
 		))
 	}
 
 	// 9. End nodes
 	endX := xCursor
 	nodes = append(nodes, map[string]interface{}{
-		"type":        "end",
-		"name":        endApprovedID,
-		"endNodeName": "approved",
-		"tag":         newID(),
-		"from":        "decisionNode",
-		"workflowState": map[string]interface{}{"type": "", "outcomeLogic": nil},
-		"decisionNode":  map[string]interface{}{},
-		"metadata":      map[string]interface{}{"x": endX, "y": yApproved, "nodeColor": 3},
+		"type":         "end",
+		"name":         "end_approved",
+		"endNodeName":  "approved",
+		"tag":          newID(),
+		"decisionNode": map[string]interface{}{},
+		"metadata":     map[string]interface{}{"x": endX, "y": yApproved, "nodeColor": 3},
 	})
 	nodes = append(nodes, map[string]interface{}{
-		"type":        "end",
-		"name":        endRejectedID,
-		"endNodeName": "rejected",
-		"tag":         newID(),
-		"from":        "decisionNode",
-		"workflowState": map[string]interface{}{"type": "", "outcomeLogic": nil},
-		"decisionNode":  map[string]interface{}{},
-		"metadata":      map[string]interface{}{"x": endX, "y": yRejected, "nodeColor": 2},
+		"type":         "end",
+		"name":         "end_rejected",
+		"endNodeName":  "rejected",
+		"tag":          newID(),
+		"decisionNode": map[string]interface{}{},
+		"metadata":     map[string]interface{}{"x": endX, "y": yRejected, "nodeColor": 2},
 	})
 
 	// 10. Build inputs

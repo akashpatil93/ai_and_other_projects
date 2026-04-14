@@ -217,20 +217,110 @@ Always invert REJECT conditions into APPROVE conditions.
 const modelsetExpressionTypes = `
 ## modelSet Expression Types
 
+Every modelSet expression must be one of three types. Choose the right one:
+
 ### 1. expression
 A single mathematical formula or conditional computation.
-  {"name": "max_emi", "type": "expression", "condition": "(input.income) * 0.7"}
+Use when: calculating a value from inputs (e.g. EMI, FOIR, max loan amount).
+  {
+    "name": "max_emi",
+    "type": "expression",
+    "condition": "(input.income - MAX(bureau.obligation)) * 0.7"
+  }
 
 ### 2. decisionTable
-A flat lookup table.
-  {"name": "interest_rate", "type": "decisionTable", "condition": "",
-   "decisionTableRules": {"default": "22", "headers": ["bureau.score"],
-     "rows": [{"columns": [{"name": "bureau.score", "value": "> 800"}], "output": "\"12\""}]}}
+A flat lookup table: one or more column conditions matched row-by-row to an output.
+Use when: output depends on combinations of variable ranges (e.g. interest rate by score x income).
+  {
+    "name": "interest_rate",
+    "type": "decisionTable",
+    "condition": "",
+    "decisionTableRules": {
+      "default": "22",
+      "headers": ["bureau.score", "input.income"],
+      "rows": [
+        {"columns": [{"name": "bureau.score", "value": "> 800"}, {"name": "input.income", "value": "> 80000"}], "output": "\"12.12\""},
+        {"columns": [{"name": "bureau.score", "value": "> 800"}, {"name": "input.income", "value": "60000..80000"}], "output": "\"14\""}
+      ]
+    }
+  }
+
+  decisionTable range syntax:
+    "> X"        – greater than X
+    "< X"        – less than X
+    ">= X"       – greater than or equal
+    "<= X"       – less than or equal
+    "X..Y"       – between X and Y (inclusive)
+    "nil"        – field is absent
 
 ### 3. matrix
-A 2D grid lookup.
-  {"name": "risk_bucket", "type": "matrix", "condition": "",
-   "matrix": {"globalRowIndex": 1, "globalColumnIndex": 1, "rows": [...], "columns": [...], "values": [...]}}
+A 2D grid: one row-variable x one column-variable → cell output value.
+Use when: output is a grid lookup (e.g. risk bucket by age x obligation bracket).
+
+Complete example — 3 row conditions x 4 column conditions:
+  {
+    "name": "risk_bucket",
+    "type": "matrix",
+    "condition": "",
+    "matrix": {
+      "globalRowIndex": 3,
+      "globalColumnIndex": 4,
+      "rows": [
+        {
+          "header": "input.age",
+          "index": 0,
+          "conditions": [
+            {"index": 0, "condition": "21..30", "child": null},
+            {"index": 1, "condition": "30..45", "child": null},
+            {"index": 2, "condition": "45..60", "child": null}
+          ]
+        },
+        {
+          "header": "No matches",
+          "index": 3,
+          "isNoMatches": true,
+          "conditions": [{"index": 3, "condition": "true", "child": null}]
+        }
+      ],
+      "columns": [
+        {
+          "header": "bureau.obligation",
+          "index": 0,
+          "conditions": [
+            {"index": 0, "condition": "< 35000", "child": null},
+            {"index": 1, "condition": "35000..65000", "child": null},
+            {"index": 2, "condition": "65000..100000", "child": null},
+            {"index": 3, "condition": "> 100000", "child": null}
+          ]
+        },
+        {
+          "header": "No matches",
+          "index": 4,
+          "isNoMatches": true,
+          "conditions": [{"index": 4, "condition": "true", "child": null}]
+        }
+      ],
+      "values": [
+        ["A", "B", "C", "D", "F"],
+        ["A", "A", "B", "C", "F"],
+        ["A", "B", "C", "D", "F"],
+        ["F", "F", "F", "F", "F"]
+      ]
+    }
+  }
+
+  matrix rules:
+  - R = number of data row conditions; C = number of data col conditions.
+  - globalRowIndex = R  (= the index field on the "No matches" row).
+  - globalColumnIndex = C  (= the index field on the "No matches" column).
+  - The rows array has exactly one data-predictor entry (index 0, all conditions listed)
+    plus one "No matches" entry (index R, isNoMatches: true, single condition "true").
+  - The columns array mirrors this: one data-predictor entry plus one "No matches" entry (index C).
+  - values is a 2D array of size (R+1) x (C+1): values[i][j] is the output for
+    data row condition i and data column condition j; the last row and last column hold
+    the fallback value (same string, e.g. "F" or "0").
+  - All condition indices must be consecutive integers (0, 1, 2 ... R for rows; 0 ... C for columns).
+  - Condition syntax: "21..30", "< 35000", "> 100000", "true"
 `
 
 // systemPrompt is the master system prompt sent with every Claude call.
@@ -263,27 +353,41 @@ SECTIONS:
 Return a single JSON object mapping each section name to a type string.
 
 Valid types:
-  "go_no_go"                   – General Go/No-Go eligibility rules
-  "dpd_checks"                 – DPD (Days Past Due) based rules
-  "bureau_score_checks"        – Bureau score based rules
+  "go_no_go"                   – General Go/No-Go eligibility rules (binary pass/fail checks)
+  "dpd_checks"                 – DPD (Days Past Due) based rules — max DPD, DPD count thresholds
+  "bureau_score_checks"        – Bureau score based rules — CIBIL, Experian, Equifax, CRIF score thresholds
   "outstanding_balance_checks" – Outstanding amount / overdue balance rules
-  "enquiry_checks"             – Credit enquiry count rules
-  "written_off_settlement_checks" – Written-off / settled / restructured / DBT / LSS rules
-  "delinquency_flag_checks"    – Delinquency flags — suit filed, wilful default
-  "credit_card_checks"         – Credit card specific rules
+  "enquiry_checks"             – Credit enquiry count rules (last 30/90 days, 6 months, etc.)
+  "written_off_settlement_checks" – Written-off / settled / restructured / DBT / LSS account rules
+  "delinquency_flag_checks"    – Delinquency flags — suit filed, wilful default, written-off flag
+  "credit_card_checks"         – Credit card specific rules — utilization, CC outstanding, CC DPD
   "account_opening_checks"     – New account opening / account count rules
   "surrogate_policy"           – Surrogate/alternative policy rules
-  "scorecard"                  – Scorecard model features
-  "modelset"                   – Computed/derived values (NOT binary pass/fail rules)
+  "scorecard"                  – Scorecard model features, WOE coefficients, bureau feature bins
+  "modelset"                   – Computed/derived values: offer calculation, interest rate tables,
+                                 risk bucket grids, pricing matrices, income derivation, FOIR/EMI limits,
+                                 product-category cap tables, program selection tables, tenure/amount caps
+                                 — NOT binary pass/fail rules
   "eligibility"                – Loan amount / EMI / FOIR computations
   "exposure"                   – Internal exposure or portfolio limit rules
   "common_rules"               – Shared rules used across programs
-  "pre_read"                   – Context, input payload definitions — SKIP
+  "pre_read"                   – Context, input payload definitions, HIT/NO-HIT definitions — SKIP
   "change_history"             – Changelog / version history — SKIP
-  "metadata"                   – Truly unclassifiable content
+  "metadata"                   – Truly unclassifiable content (do NOT use for policy rule sections)
 
-IMPORTANT: If a section contains policy rules and does not fit a specific type, classify as "go_no_go".
-Return ONLY valid JSON: {"<section_name>": "<type>"}
+IMPORTANT:
+- Prefer specific bureau categories (dpd_checks, bureau_score_checks, etc.) over "go_no_go"
+  when the section clearly focuses on a specific bureau variable category.
+- If a section contains policy rules, checks, or validations of ANY kind and does not fit a
+  more specific type, classify it as "go_no_go" — never as "metadata".
+- Sections named after specific checks (e.g. "Location Strategy", "Business Vintage",
+  "Age checks", "Negative Databases", "PAN Check", "Bank Statement Checks") are "go_no_go".
+- Sections containing lookup tables, cap grids, product/program matrices, or computed value
+  derivations are "modelset" — even if they reference pass/fail logic as part of the table.
+- "Input Payload" or variable definition tables → "pre_read" (SKIP).
+
+Return ONLY valid JSON, no explanation:
+{"<section_name>": "<type>"}
 `, sectionsSummary)
 }
 
@@ -412,10 +516,17 @@ SECTION CONTENT:
 
 Rules:
 - Arithmetic / conditional formulas → type "expression"
-- Lookup tables (flat rows) → type "decisionTable"
-- 2D grids → type "matrix"
+- Lookup tables (flat rows, one condition per row) → type "decisionTable"
+- 2D grids (one row-variable x one column-variable) → type "matrix"
 
-Return ONLY a valid JSON array of expression objects.
+Return ONLY a valid JSON array of expression objects. Every object must include:
+- name, type, condition (empty string for decisionTable/matrix)
+- For type "decisionTable": include the full "decisionTableRules" object
+  (default, headers, rows with all columns and outputs).
+- For type "matrix": include the full "matrix" object
+  (globalRowIndex, globalColumnIndex, rows, columns, values).
+Do NOT return shells or placeholders — include all rows, columns, and cell values extracted
+from the section content.
 `, systemPrompt, modelsetName, modelsetExpressionTypes, sectionContent)
 }
 
@@ -432,7 +543,20 @@ SECTION CONTENT:
 %s
 
 Common eligibility variables: abb, foir, max_eligible_loan, emi, net_income.
-Return ONLY a valid JSON array of expression objects.
+
+Rules:
+- Arithmetic / conditional formulas → type "expression"
+- Lookup tables (flat rows, one condition per row) → type "decisionTable"
+- 2D grids (one row-variable x one column-variable) → type "matrix"
+
+Return ONLY a valid JSON array of expression objects. Every object must include:
+- name, type, condition (empty string for decisionTable/matrix)
+- For type "decisionTable": include the full "decisionTableRules" object
+  (default, headers, rows with all columns and outputs).
+- For type "matrix": include the full "matrix" object
+  (globalRowIndex, globalColumnIndex, rows, columns, values).
+Do NOT return shells or placeholders — include all rows, columns, and cell values extracted
+from the section content.
 `, systemPrompt, modelsetExpressionTypes, sectionContent)
 }
 
@@ -449,12 +573,18 @@ SECTION CONTENT:
 %s
 
 Choose the correct type for each feature:
-- Single-variable WOE bins → type "decisionTable"
+- Single-variable WOE bins → type "decisionTable" (one header, one column condition per row)
 - Two-variable interaction grid → type "matrix"
-- Calculated score total → type "expression"
+- Calculated score total → type "expression", use bare feature names
 
 Map all input variable names to the bureau.* namespace using the Bureau Fields table.
-Return ONLY a valid JSON array of expression objects.
+Use "0" as the default for decisionTable WOE features.
+
+Return ONLY a valid JSON array of expression objects. Every object must include:
+- name, type, condition (empty string for decisionTable/matrix)
+- For type "decisionTable": include the full "decisionTableRules" object.
+- For type "matrix": include the full "matrix" object with all rows, columns, and values.
+Do NOT return shells — include all data extracted from the section.
 `, systemPrompt, modelsetExpressionTypes, sectionContent)
 }
 
