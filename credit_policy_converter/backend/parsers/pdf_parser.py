@@ -29,27 +29,33 @@ def parse_pdf(file_path: str) -> List[Dict[str, Any]]:
     if not full_text.strip():
         return []
 
+    print(f"[debug] pdf_parser: extracted {len(full_text)} chars total")
+
     # ── Strategy 1: "Rule set name:" lines ───────────────────────────────────
     sections = _split_by_ruleset_name(full_text)
     if sections:
+        print(f"[debug] pdf_parser: split by ruleset_name → {len(sections)} sections: {[s['name'] for s in sections]}")
         return sections
 
     # ── Strategy 2: numbered headings (1.1, 2.3, A.1 …) ─────────────────────
     sections = _split_by_numbered_headings(full_text)
     if sections:
+        print(f"[debug] pdf_parser: split by numbered_headings → {len(sections)} sections: {[s['name'] for s in sections]}")
         return sections
 
     # ── Strategy 3: ALL-CAPS lines ────────────────────────────────────────────
     sections = _split_by_allcaps(full_text)
     if sections:
+        print(f"[debug] pdf_parser: split by allcaps → {len(sections)} sections: {[s['name'] for s in sections]}")
         return sections
 
+    print(f"[debug] pdf_parser: no split strategy matched, using single fallback section")
     # ── Strategy 4: single fallback section ──────────────────────────────────
     return [{
         "name": "Policy Document",
         "headers": ["Content"],
         "rows": [{"Content": full_text}],
-        "text": f"=== Policy Document ===\n{full_text[:8000]}",
+        "text": f"=== Policy Document ===\n{full_text[:24000]}",
         "row_count": 1,
     }]
 
@@ -61,13 +67,13 @@ def parse_pdf(file_path: str) -> List[Dict[str, Any]]:
 def _make_section(name: str, text: str) -> Optional[Dict[str, Any]]:
     """Return a section dict or None if the text is too short to be useful."""
     text = text.strip()
-    if not text or len(text) < 40:
+    if not text or len(text) < 20:
         return None
     return {
         "name": name,
         "headers": ["Content"],
         "rows": [{"Content": text}],
-        "text": f"=== {name} ===\n{text[:8000]}",
+        "text": f"=== {name} ===\n{text[:24000]}",
         "row_count": 1,
     }
 
@@ -80,17 +86,34 @@ def _split_by_ruleset_name(full_text: str) -> List[Dict[str, Any]]:
         ● Rule set name: Location Strategy
         Rule set name : Negative Databases
     """
-    # Match optional bullet + "Rule set name" + optional spaces/colon + the name
+    # Match optional bullet/symbol + "Rule set name" + optional spaces/colon + the name
+    # Broad match to catch any bullet character PyMuPDF might extract
     pattern = re.compile(
-        r'(?:^|[\n\r])[ \t]*[●•\-*]?[ \t]*Rule\s+set\s+name\s*[:\-]\s*(.+)',
+        r'(?:^|[\n\r])\s*[^\w\s]?\s*Rule\s+set\s+name\s*[:\-]\s*(.+)',
         re.IGNORECASE,
     )
+    all_matches = list(pattern.finditer(full_text))
+    print(f"[debug] pdf_parser _split_by_ruleset_name: found {len(all_matches)} 'Rule set name' matches (regex)")
 
     splits: List[Tuple[str, int]] = []
-    for m in pattern.finditer(full_text):
+    for m in all_matches:
         rs_name = m.group(1).strip().rstrip("*")
         if rs_name:
             splits.append((rs_name, m.start()))
+
+    # Fallback: line-by-line search (catches edge cases with unusual line endings or bullets)
+    if not splits:
+        _rs_pat = re.compile(r'rule\s*set\s*name\s*[:\-]\s*(.+)', re.IGNORECASE)
+        pos = 0
+        for line in full_text.splitlines(keepends=True):
+            m = _rs_pat.search(line)
+            if m:
+                rs_name = m.group(1).strip().rstrip("*")
+                if rs_name:
+                    splits.append((rs_name, pos))
+            pos += len(line)
+        if splits:
+            print(f"[debug] pdf_parser _split_by_ruleset_name: found {len(splits)} matches via line-by-line fallback")
 
     if not splits:
         return []

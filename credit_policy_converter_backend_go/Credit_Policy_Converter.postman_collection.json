@@ -1,0 +1,455 @@
+{
+  "info": {
+    "name": "Credit Policy Converter API",
+    "_postman_id": "credit-policy-converter-go",
+    "description": "Postman collection for the Credit Policy Converter Go backend.\n\nTypical flow:\n1. POST /api/verify-key  — confirm your Anthropic key is valid\n2. POST /api/upload      — upload a policy document (.xlsx / .pdf / .docx / .csv / .json)\n3. POST /api/parse       — parse the uploaded document into sections\n4. POST /api/generate    — call Claude to extract rules and assemble the BRE workflow\n5. GET  /api/workflow/:id — retrieve the saved workflow\n6. PUT  /api/workflow/:id — update / patch a workflow\n7. POST /api/validate    — validate any workflow JSON\n8. GET  /api/export/:id  — download workflow as .workflow file",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3333",
+      "type": "string",
+      "description": "Base URL of the running server. Change port if you set PORT env var."
+    },
+    {
+      "key": "anthropic_key",
+      "value": "sk-ant-YOUR_KEY_HERE",
+      "type": "string",
+      "description": "Your Anthropic API key. Used as X-Anthropic-Key header."
+    },
+    {
+      "key": "file_id",
+      "value": "",
+      "type": "string",
+      "description": "Populated automatically after /api/upload via a test script."
+    },
+    {
+      "key": "workflow_id",
+      "value": "",
+      "type": "string",
+      "description": "Populated automatically after /api/generate via a test script."
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Simple liveness check. Returns {\"status\":\"ok\"}."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "body": "{\"status\":\"ok\"}"
+            }
+          ]
+        },
+        {
+          "name": "GET /",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/",
+              "host": ["{{base_url}}"],
+              "path": [""]
+            },
+            "description": "Root endpoint — confirms the API is up."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "POST /api/verify-key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Anthropic-Key",
+                "value": "{{anthropic_key}}",
+                "type": "text",
+                "description": "Your Anthropic API key (must start with sk-ant-)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": { "language": "json" }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/verify-key",
+              "host": ["{{base_url}}"],
+              "path": ["api", "verify-key"]
+            },
+            "description": "Validates the Anthropic API key format. Returns masked key on success.\n\nHeaders required:\n  X-Anthropic-Key: sk-ant-..."
+          },
+          "response": [
+            {
+              "name": "200 Valid key",
+              "status": "OK",
+              "code": 200,
+              "body": "{\"valid\":true,\"masked\":\"sk-ant-api03...<last4>\"}"
+            },
+            {
+              "name": "400 Missing key",
+              "status": "Bad Request",
+              "code": 400,
+              "body": "{\"detail\":\"No API key provided.\"}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Documents",
+      "item": [
+        {
+          "name": "POST /api/upload",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.file_id) {",
+                  "    pm.collectionVariables.set('file_id', json.file_id);",
+                  "    console.log('file_id saved:', json.file_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Select a policy document: .xlsx, .xls, .pdf, .docx, .csv, or .json"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/upload",
+              "host": ["{{base_url}}"],
+              "path": ["api", "upload"]
+            },
+            "description": "Upload a credit policy document.\n\nBody: multipart/form-data\n  file: <your policy file>\n\nSupported formats: .xlsx, .xls, .pdf, .docx, .csv, .json\n\nReturns a file_id which is automatically saved to the collection variable for use in subsequent requests."
+          },
+          "response": [
+            {
+              "name": "200 Uploaded",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"file_id\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"filename\": \"credit_policy.xlsx\",\n  \"size\": 45312\n}"
+            },
+            {
+              "name": "400 Unsupported type",
+              "status": "Bad Request",
+              "code": 400,
+              "body": "{\"detail\":\"Unsupported file type '.txt'. Allowed: .xlsx, .xls, .pdf, .docx, .json, .csv\"}"
+            }
+          ]
+        },
+        {
+          "name": "POST /api/parse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"file_id\": \"{{file_id}}\"\n}",
+              "options": {
+                "raw": { "language": "json" }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/parse",
+              "host": ["{{base_url}}"],
+              "path": ["api", "parse"]
+            },
+            "description": "Parse the uploaded document into sections (sheets, pages, headings).\n\nThis step is optional — /api/generate will auto-parse if skipped.\nUseful to preview what sections Claude will process before spending API credits.\n\nBody:\n  file_id: UUID from /api/upload"
+          },
+          "response": [
+            {
+              "name": "200 Parsed",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"parse_id\": \"7f3a...\",\n  \"section_count\": 5,\n  \"sections\": [\n    { \"name\": \"Go No Go Checks\", \"row_count\": 12, \"headers\": [\"Rule\", \"Condition\", \"Status\"] },\n    { \"name\": \"Bureau Score Checks\", \"row_count\": 8, \"headers\": [\"Parameter\", \"Min\", \"Max\"] }\n  ]\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Workflow Generation",
+      "item": [
+        {
+          "name": "POST /api/generate",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.workflow_id) {",
+                  "    pm.collectionVariables.set('workflow_id', json.workflow_id);",
+                  "    console.log('workflow_id saved:', json.workflow_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Anthropic-Key",
+                "value": "{{anthropic_key}}",
+                "type": "text",
+                "description": "Required if ANTHROPIC_API_KEY env var is not set on the server"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"file_id\": \"{{file_id}}\",\n  \"context\": \"\",\n  \"sample_payload\": \"\"\n}",
+              "options": {
+                "raw": { "language": "json" }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/generate",
+              "host": ["{{base_url}}"],
+              "path": ["api", "generate"]
+            },
+            "description": "Main endpoint — runs the full pipeline:\n  1. Auto-parse the document (if not already parsed)\n  2. Classify each section via Claude\n  3. Extract rules / expressions from each section via Claude\n  4. Assemble the BRE workflow JSON\n  5. Validate and save the workflow\n\nBody fields:\n  file_id        — UUID from /api/upload (required)\n  context        — free-text instructions for Claude, e.g. \"This is a secured business loan policy, max tenure 36 months\" (optional)\n  sample_payload — JSON string of a representative API request body, used to populate the workflow's inputs array (optional)\n\nHeaders:\n  X-Anthropic-Key — your Anthropic key (only needed if ANTHROPIC_API_KEY is not set on the server)\n\nThe workflow_id is automatically saved to the collection variable."
+          },
+          "response": [
+            {
+              "name": "200 Generated",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"workflow_id\": \"abc12345-...\",\n  \"workflow\": {\n    \"nodes\": [...],\n    \"inputs\": [...],\n    \"outputs\": [],\n    \"settings\": {\n      \"isNullableInputsAllowed\": true,\n      \"continueEvalWithDataSourceErr\": false,\n      \"isRejectionBasedRulesetEnable\": false\n    }\n  },\n  \"validation\": {\n    \"valid\": true,\n    \"errors\": [],\n    \"warnings\": [],\n    \"stats\": {\n      \"total_nodes\": 12,\n      \"rule_sets\": 3,\n      \"total_rules\": 28,\n      \"inputs\": 6\n    }\n  }\n}"
+            },
+            {
+              "name": "400 No API key",
+              "status": "Bad Request",
+              "code": 400,
+              "body": "{\"detail\":\"No API key provided. Set ANTHROPIC_API_KEY or pass X-Anthropic-Key header.\"}"
+            }
+          ]
+        },
+        {
+          "name": "POST /api/generate (with context)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.workflow_id) {",
+                  "    pm.collectionVariables.set('workflow_id', json.workflow_id);",
+                  "    console.log('workflow_id saved:', json.workflow_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Anthropic-Key",
+                "value": "{{anthropic_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"file_id\": \"{{file_id}}\",\n  \"context\": \"This is an unsecured personal loan policy. Maximum loan amount is 5 lakhs. Tenure 12-36 months. Primary applicant must be salaried.\",\n  \"sample_payload\": \"{\\\"applicants\\\": [{\\\"age\\\": 30, \\\"income\\\": 50000, \\\"occupation_type\\\": \\\"salaried\\\"}]}\"\n}",
+              "options": {
+                "raw": { "language": "json" }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/generate",
+              "host": ["{{base_url}}"],
+              "path": ["api", "generate"]
+            },
+            "description": "Same as /api/generate but with:\n  context — gives Claude extra domain knowledge about the loan product\n  sample_payload — JSON of a real API request body so the inputs array reflects your actual schema"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Workflow Management",
+      "item": [
+        {
+          "name": "GET /api/workflow/:id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/workflow/{{workflow_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "workflow", "{{workflow_id}}"]
+            },
+            "description": "Retrieve a previously generated workflow by its ID.\n\nReturns the full workflow JSON plus validation result and the originating file_id."
+          },
+          "response": [
+            {
+              "name": "200 Found",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"workflow_id\": \"{{workflow_id}}\",\n  \"file_id\": \"{{file_id}}\",\n  \"workflow\": { \"nodes\": [...] },\n  \"validation\": { \"valid\": true, \"errors\": [], \"warnings\": [], \"stats\": {} }\n}"
+            },
+            {
+              "name": "404 Not found",
+              "status": "Not Found",
+              "code": 404,
+              "body": "{\"detail\":\"Workflow not found.\"}"
+            }
+          ]
+        },
+        {
+          "name": "PUT /api/workflow/:id",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"workflow\": {\n    \"nodes\": [],\n    \"inputs\": [],\n    \"outputs\": [],\n    \"settings\": {\n      \"isNullableInputsAllowed\": true,\n      \"continueEvalWithDataSourceErr\": false,\n      \"isRejectionBasedRulesetEnable\": false\n    }\n  }\n}",
+              "options": {
+                "raw": { "language": "json" }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/workflow/{{workflow_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "workflow", "{{workflow_id}}"]
+            },
+            "description": "Replace a workflow's content with an edited version.\n\nThe server re-validates on save and returns the new validation result.\n\nBody:\n  workflow: full workflow JSON object"
+          },
+          "response": [
+            {
+              "name": "200 Updated",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"workflow_id\": \"{{workflow_id}}\",\n  \"workflow\": { ... },\n  \"validation\": { \"valid\": true, \"errors\": [], \"warnings\": [] }\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST /api/validate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"workflow\": {\n    \"nodes\": [\n      {\n        \"type\": \"start\",\n        \"name\": \"Start\",\n        \"metadata\": {\"x\": 0, \"y\": 0, \"nodeColor\": 1},\n        \"nextState\": {\"name\": \"Source_Node\", \"type\": \"dataSource\"}\n      }\n    ],\n    \"inputs\": [],\n    \"outputs\": [],\n    \"settings\": {}\n  }\n}",
+              "options": {
+                "raw": { "language": "json" }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/validate",
+              "host": ["{{base_url}}"],
+              "path": ["api", "validate"]
+            },
+            "description": "Validate any workflow JSON without saving it.\n\nBody: either { \"workflow\": { ... } } or the workflow object directly.\n\nReturns:\n  valid    — true/false\n  errors   — structural errors (broken node references, missing start/end, etc.)\n  warnings — non-fatal issues (empty ruleSets, blank approveConditions)\n  stats    — node counts, total rules, input count"
+          },
+          "response": [
+            {
+              "name": "200 Valid",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"valid\": true,\n  \"errors\": [],\n  \"warnings\": [\"RuleSet 'go_no_go_checks' has no rules\"],\n  \"stats\": {\n    \"total_nodes\": 8,\n    \"node_types\": {\"start\": 1, \"dataSource\": 1, \"ruleSet\": 2, \"branch\": 1, \"switch\": 2, \"end\": 2},\n    \"rule_sets\": 2,\n    \"total_rules\": 0,\n    \"inputs\": 3\n  }\n}"
+            },
+            {
+              "name": "200 Invalid",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"valid\": false,\n  \"errors\": [\"Missing required 'start' node\", \"No 'end' nodes found\"],\n  \"warnings\": [],\n  \"stats\": {}\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET /api/export/:id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/export/{{workflow_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "export", "{{workflow_id}}"]
+            },
+            "description": "Download the workflow as a .workflow file (pretty-printed JSON).\n\nThe response has Content-Disposition: attachment so Postman will offer to save the file.\nFilename: workflow_<first8chars>.workflow"
+          },
+          "response": [
+            {
+              "name": "200 File download",
+              "status": "OK",
+              "code": 200,
+              "body": "{ ... full workflow JSON ... }"
+            },
+            {
+              "name": "404 Not found",
+              "status": "Not Found",
+              "code": 404,
+              "body": "{\"detail\":\"Workflow not found.\"}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 Claude API client for extracting credit policy rules from document sections.
 Uses claude-opus-4-6 with adaptive thinking.
 """
+import asyncio
 import json
 import re
 from typing import Any, Dict, List
@@ -157,7 +158,7 @@ class ClaudeClient:
                                         "introduction", "input payload", "1.1 "]):
                 result[s["name"]] = "pre_read"
             elif any(k in nl for k in ["exposure", "limit"]):
-                result[s["name"]] = "exposure"
+                result[s["name"]] = "modelset"
             elif any(k in nl for k in ["common", "shared"]):
                 result[s["name"]] = "common_rules"
             # Explicit skip types
@@ -217,6 +218,10 @@ class ClaudeClient:
         )
 
         # Step 1 — classify sections
+        print(f"[debug] extract_all_sections: {len(sections)} sections")
+        for s in sections:
+            print(f"[debug]   section: '{s['name']}' ({s.get('row_count', 0)} rows, {len(s.get('text',''))} chars)")
+
         summary_lines = []
         for s in sections:
             h_preview = ", ".join(str(h) for h in s.get("headers", [])[:6])
@@ -227,71 +232,121 @@ class ClaudeClient:
 
         try:
             classify_resp = await self._call(
-                get_classify_sections_prompt("\n".join(summary_lines)), max_tokens=1024
+                get_classify_sections_prompt("\n".join(summary_lines)), max_tokens=2048
             )
-            section_types = self._parse_json(classify_resp)
-            if not isinstance(section_types, dict):
+            raw_types = self._parse_json(classify_resp)
+            if not isinstance(raw_types, dict):
+                print(f"[debug] classify LLM returned non-dict, using name-based fallback")
                 section_types = self._classify_by_name(sections)
-        except Exception:
+            else:
+                print(f"[debug] classify LLM result: {raw_types}")
+                # Build a case-insensitive lookup: try exact match first, then lowercase match
+                section_types = raw_types
+                # Normalise keys: for any section whose name isn't in raw_types,
+                # try matching by lowercased / stripped name
+                raw_lower = {k.lower().strip(): v for k, v in raw_types.items()}
+                section_types = {
+                    s["name"]: raw_types.get(
+                        s["name"],
+                        raw_lower.get(s["name"].lower().strip(), "")
+                    )
+                    for s in sections
+                }
+                # For any section still without a type, fall through to name-based
+                name_fallback = self._classify_by_name(sections)
+                for s in sections:
+                    if not section_types.get(s["name"]):
+                        section_types[s["name"]] = name_fallback.get(s["name"], "go_no_go")
+        except Exception as e:
+            print(f"[debug] classify failed ({e}), using name-based fallback")
             section_types = self._classify_by_name(sections)
 
-        # Step 2 — process each section
-        skip_types = {"metadata", "pre_read", "change_history", "exposure"}
+        print(f"[debug] final section_types: {section_types}")
 
-        for section in sections:
+        # Step 2 — process all sections in parallel (semaphore caps concurrency at 5)
+        skip_types = {"metadata", "pre_read", "change_history"}
+
+        # ~24k chars ≈ 6k tokens — well within Claude's context window
+        MAX_SECTION_CHARS = 24_000
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def _process_section(section: Dict) -> Dict:
             name = section["name"]
-            stype = section_types.get(name, "metadata")
+            stype = section_types.get(name, "go_no_go")
             text = section.get("text", "")
 
             if not text or stype in skip_types:
-                continue
+                return {}
 
-            # Truncate to avoid exceeding context limits
-            text = text[:8000]
-
-            def _inject(prompt: str) -> str:
-                """Append the user context block to a prompt string."""
-                return prompt + context_block
-
-            # Ruleset key = sanitized section heading (e.g. "DPD Rules" → "dpd_rules")
+            text = text[:MAX_SECTION_CHARS]
             rs_key = self._sanitize_name(name)
 
-            try:
-                if stype in BUREAU_CATEGORY_TYPES or stype in {"go_no_go", "surrogate_policy", "common_rules"}:
-                    # Pick the right extraction prompt based on section type
-                    if stype in BUREAU_CATEGORY_TYPES:
-                        prompt = get_bureau_ruleset_prompt(text, stype)
-                    elif stype == "surrogate_policy":
-                        prompt = get_surrogate_policy_prompt(text)
+            def _inject(prompt: str) -> str:
+                return prompt + context_block
+
+            async with semaphore:
+                try:
+                    if stype in BUREAU_CATEGORY_TYPES or stype in {"go_no_go", "surrogate_policy", "common_rules"}:
+                        if stype in BUREAU_CATEGORY_TYPES:
+                            prompt = get_bureau_ruleset_prompt(text, stype)
+                        elif stype == "surrogate_policy":
+                            prompt = get_surrogate_policy_prompt(text)
+                        else:
+                            prompt = get_go_no_go_prompt(text)
+                        raw = await self._call(_inject(prompt), max_tokens=4096)
+                        rules = self._parse_json(raw)
+                        print(f"[debug] section '{name}' (type={stype}): Claude returned {type(rules).__name__} len={len(rules) if isinstance(rules, list) else 'N/A'}")
+                        if isinstance(rules, list) and rules:
+                            return {"type": "ruleset", "key": rs_key, "data": rules}
+
+                    elif stype == "modelset":
+                        raw = await self._call(_inject(get_modelset_prompt(text, rs_key)), max_tokens=16384)
+                        exprs = self._parse_json(raw)
+                        print(f"[debug] section '{name}' (type=modelset): Claude returned {type(exprs).__name__} len={len(exprs) if isinstance(exprs, list) else 'N/A'}")
+                        if isinstance(exprs, list) and exprs:
+                            return {"type": "modelset", "key": rs_key, "data": exprs}
+
+                    elif stype == "eligibility":
+                        raw = await self._call(_inject(get_eligibility_prompt(text)), max_tokens=16384)
+                        exprs = self._parse_json(raw)
+                        print(f"[debug] section '{name}' (type=eligibility): Claude returned {type(exprs).__name__} len={len(exprs) if isinstance(exprs, list) else 'N/A'}")
+                        if isinstance(exprs, list):
+                            return {"type": "eligibility", "data": exprs}
+
+                    elif stype == "scorecard":
+                        raw = await self._call(_inject(get_scorecard_prompt(text)), max_tokens=16384)
+                        exprs = self._parse_json(raw)
+                        print(f"[debug] section '{name}' (type=scorecard): Claude returned {type(exprs).__name__} len={len(exprs) if isinstance(exprs, list) else 'N/A'}")
+                        if isinstance(exprs, list):
+                            return {"type": "scorecard", "data": exprs}
+
                     else:
-                        prompt = get_go_no_go_prompt(text)
+                        print(f"[debug] section '{name}' (type={stype}): SKIPPED (no handler)")
 
-                    raw = await self._call(_inject(prompt), max_tokens=4096)
-                    rules = self._parse_json(raw)
-                    if isinstance(rules, list) and rules:
-                        named_ruleset_map.setdefault(rs_key, []).extend(rules)
+                except Exception as exc:
+                    print(f"[warn] Error processing section '{name}': {exc}")
 
-                elif stype == "modelset":
-                    raw = await self._call(_inject(get_modelset_prompt(text, rs_key)), max_tokens=16384)
-                    exprs = self._parse_json(raw)
-                    if isinstance(exprs, list) and exprs:
-                        named_modelset_map.setdefault(rs_key, []).extend(exprs)
+            return {}
 
-                elif stype == "eligibility":
-                    raw = await self._call(_inject(get_eligibility_prompt(text)), max_tokens=16384)
-                    exprs = self._parse_json(raw)
-                    if isinstance(exprs, list):
-                        result["eligibility_expressions"].extend(exprs)
+        # Fire all sections concurrently; gather preserves list order (important for rulesets)
+        section_results = await asyncio.gather(
+            *[_process_section(s) for s in sections],
+            return_exceptions=False,
+        )
 
-                elif stype == "scorecard":
-                    raw = await self._call(_inject(get_scorecard_prompt(text)), max_tokens=16384)
-                    exprs = self._parse_json(raw)
-                    if isinstance(exprs, list):
-                        result["scorecard_expressions"].extend(exprs)
-
-            except Exception as exc:
-                print(f"[warn] Error processing section '{name}': {exc}")
+        for res in section_results:
+            if not res:
                 continue
+            t = res["type"]
+            if t == "ruleset":
+                named_ruleset_map.setdefault(res["key"], []).extend(res["data"])
+            elif t == "modelset":
+                named_modelset_map.setdefault(res["key"], []).extend(res["data"])
+            elif t == "eligibility":
+                result["eligibility_expressions"].extend(res["data"])
+            elif t == "scorecard":
+                result["scorecard_expressions"].extend(res["data"])
 
         # Build ordered lists from accumulated maps
         result["named_rulesets"] = [

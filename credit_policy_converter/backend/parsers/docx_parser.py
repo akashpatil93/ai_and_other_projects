@@ -42,7 +42,7 @@ def _make_section(name: str, lines: List[str]) -> Optional[Dict[str, Any]]:
         "name": name,
         "headers": ["Content"],
         "rows": [{"Content": text}],
-        "text": f"=== {name} ===\n{text[:8000]}",
+        "text": f"=== {name} ===\n{text[:24000]}",
         "row_count": 1,
     }
 
@@ -126,7 +126,7 @@ def _split_by_headings(doc) -> List[Dict[str, Any]]:
             "name": current_name,
             "headers": header_row[:],
             "rows": current_rows[:],
-            "text": text[:8000],
+            "text": text[:24000],
             "row_count": len(current_rows),
         })
 
@@ -200,6 +200,6 @@ def parse_docx(file_path: str) -> List[Dict[str, Any]]:
         "name": "Document",
         "headers": [],
         "rows": [],
-        "text": full_text[:8000],
+        "text": full_text[:24000],
         "row_count": 0,
     }]

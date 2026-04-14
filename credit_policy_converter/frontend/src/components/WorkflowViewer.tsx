@@ -73,7 +73,7 @@ export default function WorkflowViewer({ workflow }: Props) {
       {/* JSON display */}
       <div className="relative bg-gray-900 rounded-xl overflow-hidden">
         <pre className="p-4 text-xs text-gray-100 overflow-auto max-h-[560px] leading-relaxed font-mono">
-          <SyntaxHighlight json={json} />
+          {json.length > 40_000 ? json : <SyntaxHighlight json={json} />}
         </pre>
       </div>
     </div>

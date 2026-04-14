@@ -209,11 +209,11 @@ export default function App() {
                 </div>
                 <div>
                   <p className={`font-semibold text-sm ${validation.valid ? 'text-green-800' : 'text-yellow-800'}`}>
-                    {validation.valid ? 'Workflow Valid' : `${validation.errors.length} validation error${validation.errors.length !== 1 ? 's' : ''}`}
+                    {validation.valid ? 'Workflow Valid' : `${validation.errors?.length ?? 0} validation error${(validation.errors?.length ?? 0) !== 1 ? 's' : ''}`}
                   </p>
                   <p className="text-xs text-gray-500 mt-0.5">
-                    {validation.stats.total_nodes} nodes · {validation.stats.total_rules} rules · {validation.stats.inputs} inputs
-                    {validation.warnings.length > 0 && ` · ${validation.warnings.length} warning${validation.warnings.length !== 1 ? 's' : ''}`}
+                    {validation.stats?.total_nodes ?? 0} nodes · {validation.stats?.total_rules ?? 0} rules · {validation.stats?.inputs ?? 0} inputs
+                    {(validation.warnings?.length ?? 0) > 0 && ` · ${validation.warnings.length} warning${validation.warnings.length !== 1 ? 's' : ''}`}
                   </p>
                 </div>
               </div>
@@ -229,9 +229,9 @@ export default function App() {
             </div>
 
             {/* Validation errors/warnings */}
-            {(validation.errors.length > 0 || validation.warnings.length > 0) && (
+            {((validation.errors?.length ?? 0) > 0 || (validation.warnings?.length ?? 0) > 0) && (
               <div className="space-y-2">
-                {validation.errors.map((e, i) => (
+                {(validation.errors ?? []).map((e, i) => (
                   <div key={i} className="flex items-center gap-2 text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg">
                     <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -239,7 +239,7 @@ export default function App() {
                     {e}
                   </div>
                 ))}
-                {validation.warnings.map((w, i) => (
+                {(validation.warnings ?? []).map((w, i) => (
                   <div key={i} className="flex items-center gap-2 text-sm text-yellow-700 bg-yellow-50 px-3 py-2 rounded-lg">
                     <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01" />
