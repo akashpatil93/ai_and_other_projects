@@ -56,6 +56,7 @@ class ParseRequest(BaseModel):
 class GenerateRequest(BaseModel):
     file_id: str
     context: str = ""
+    sample_payload: str = ""
 
 
 class UpdateWorkflowRequest(BaseModel):
@@ -204,7 +205,7 @@ async def generate_workflow(
     try:
         claude_client = _get_client(x_anthropic_key)
         extracted = await claude_client.extract_all_sections(sections, context=request.context)
-        workflow = assemble_workflow(extracted)
+        workflow = assemble_workflow(extracted, sample_payload=request.sample_payload)
         validation = validate_workflow(workflow)
 
         workflow_id = str(uuid.uuid4())

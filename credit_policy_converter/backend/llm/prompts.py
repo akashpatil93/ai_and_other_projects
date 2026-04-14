@@ -290,74 +290,203 @@ So:
 # ─────────────────────────────────────────────────────────────────────────────
 
 EXPRESSION_SYNTAX = """
-## Expression Language Syntax
+## Expression Language — Sentinel / Expr
 
-Data source prefixes (external inputs):
+The BRE uses the Expr expression language. All conditions and modelSet expressions
+must be written in valid Expr syntax.
+
+───────────────────────────────────────────────────────
+### Data Source Prefixes
+───────────────────────────────────────────────────────
   bureau.*   → bureau pull fields (see Bureau Fields table)
   bank.*     → bank statement fields (see Bank Fields table)
-  input.*    → application/request fields (see Input Fields table)
-              If a policy variable is not in bureau or bank tables → use input.*
+  input.*    → everything else — application/request fields
+              If a policy variable is NOT in bureau or bank → use input.<name>
 
-Computed value references (see Expression Reference Rules above):
-  <modelset_name>.<expr_name>   → cross-node reference
-  <expr_name>                   → within same modelSet (bare name)
-  <ruleset_name>.decision       → pass/reject outcome of a ruleSet
+Computed value cross-node references (see Expression Reference Rules):
+  <modelset_name>.<expr_name>   → output of a modelSet expression
+  <expr_name>                   → earlier expression in the SAME modelSet (bare name)
+  <ruleset_name>.decision       → "pass" / "reject" outcome of a ruleSet
 
-Operators:
-  Comparison : >=  <=  ==  !=  >  <
-  Logical    : &&  ||  and  or  !
-  Nil check  : field == nil   (field is missing / null)
-  String     : input.field == "value"
-  Grouping   : (expr1) && (expr2)
+───────────────────────────────────────────────────────
+### Literals
+───────────────────────────────────────────────────────
+  Boolean : true, false
+  Integer : 42
+  Float   : 0.5
+  String  : "foo" or 'bar'
+  Array   : [1, 2, 3]
+  Map     : {a: 1, b: 2}
+  Nil     : nil
 
-## CRITICAL: Converting Policy Rules
+───────────────────────────────────────────────────────
+### Operators
+───────────────────────────────────────────────────────
+  Arithmetic   : +  -  *  /  %  ^  **
+  Comparison   : ==  !=  <  >  <=  >=
+  Logical      : !  not  &&  and  ||  or
+  Ternary      : condition ? valueIfTrue : valueIfFalse
+  Nil coalesce : expr ?? fallback          (returns fallback if expr is nil)
+  Optional     : obj?.field               (nil if obj is nil, else obj.field)
+  Membership   : "x" in ["x","y"]         (array / map key membership)
+  Range        : 1..5  → [1, 2, 3, 4, 5]
+  String concat: "Hello " + name
+  Contains     : str contains "substr"
+  StartsWith   : str startsWith "prefix"
+  EndsWith     : str endsWith "suffix"
+  Regex        : str matches "^[A-Z]+"
+
+───────────────────────────────────────────────────────
+### Variables (let)
+───────────────────────────────────────────────────────
+  let x = expr; x * 2
+  let a = input.income; let b = input.emi; a / b
+
+───────────────────────────────────────────────────────
+### Predicates  (used inside array functions)
+───────────────────────────────────────────────────────
+  #           → current element
+  #acc        → accumulator (in reduce)
+  #index      → current index
+  .field      → shorthand for #.field when element is a map/struct
+
+  filter(input.applicants, {#.income_considered == true})
+  all(input.applicants, {#.age >= 18})
+  any(input.docs, {#.osv == true})
+
+───────────────────────────────────────────────────────
+### String Functions
+───────────────────────────────────────────────────────
+  trim(str)                    → removes whitespace from both ends
+  trimPrefix(str, prefix)
+  trimSuffix(str, suffix)
+  upper(str)  /  lower(str)
+  split(str, delim)            → array of substrings
+  replace(str, old, new)
+  indexOf(str, sub)            → first occurrence index, -1 if not found
+  hasPrefix(str, prefix)  /  hasSuffix(str, suffix)   → bool
+  len(str)                     → character count
+
+───────────────────────────────────────────────────────
+### Date Functions
+───────────────────────────────────────────────────────
+  now()                        → current datetime
+  duration("1h")               → duration value (units: ns, us, ms, s, m, h)
+  date("2024-01-01")           → parse date string
+  date("2024-01-01", "2006-01-02", "Asia/Kolkata")  → with format + timezone
+
+  Date arithmetic:
+    now() - date(input.statement_pull_date)          → duration (days etc.)
+    date(input.dob) + duration("8760h")              → add 1 year
+
+  Comparing dates:
+    now() - date(input.statement_pull_date) <= duration("720h")   // within 30 days
+
+───────────────────────────────────────────────────────
+### Number Functions
+───────────────────────────────────────────────────────
+  max(a, b)   min(a, b)   abs(n)
+  ceil(n)     floor(n)    round(n)
+  int(v)      float(v)    string(v)
+
+───────────────────────────────────────────────────────
+### Array Functions
+───────────────────────────────────────────────────────
+  len(arr)                          → count of elements
+  all(arr, predicate)               → true if every element matches
+  any(arr, predicate)               → true if at least one matches
+  one(arr, predicate)               → true if exactly one matches
+  none(arr, predicate)              → true if no element matches
+  count(arr, predicate)             → number of matching elements
+  filter(arr, predicate)            → new array of matching elements
+  map(arr, predicate)               → new array by transforming each element
+  find(arr, predicate)              → first matching element (or nil)
+  findIndex(arr, predicate)         → index of first match (-1 if none)
+  sum(arr)  /  sum(arr, predicate)  → numeric sum
+  mean(arr)                         → average
+  median(arr)                       → median
+  first(arr)  /  last(arr)
+  take(arr, n)                      → first n elements
+  sort(arr)  /  sort(arr, "desc")
+  sortBy(arr, predicate)
+  reverse(arr)
+  concat(arr1, arr2)
+  join(arr, delim)                  → string
+  reduce(arr, predicate, initial)   → fold / accumulate
+  groupBy(arr, predicate)           → map of groups
+
+  Examples:
+    len(filter(input.applicants, {#.income_considered == true})) >= 1
+    any(input.applicants, {#.rbi_defaulter_flag == true})
+    all(input.applicants, {#.age >= 18})
+    sum(map(input.applicants, {#.shareholding})) >= 51
+    filter(input.docs, {#.doc_type == "BRP"})
+
+───────────────────────────────────────────────────────
+### Map Functions
+───────────────────────────────────────────────────────
+  keys(m)    → array of keys
+  values(m)  → array of values
+
+───────────────────────────────────────────────────────
+### Miscellaneous
+───────────────────────────────────────────────────────
+  len(v)           → length of array, map, or string
+  get(v, key)      → safe index/key access, returns nil if missing
+  type(v)          → "nil", "bool", "int", "float", "string", "array", "map"
+
+───────────────────────────────────────────────────────
+## CRITICAL: Converting Policy Rules to approveCondition
+───────────────────────────────────────────────────────
 
 ### Always invert REJECT conditions into APPROVE conditions
-The workflow engine evaluates approveCondition — it must be TRUE to PASS.
+The engine evaluates approveCondition — must be TRUE to PASS.
 
   "Reject if bureau.max_overdue > 2000"
-  → approveCondition: "bureau.max_overdue <= 2000 || bureau.max_overdue == nil"
+  → "bureau.max_overdue <= 2000 || bureau.max_overdue == nil"
 
-  "Reject if bureau.cnt_dbt_lss >= 1"
-  → approveCondition: "bureau.cnt_dbt_lss == 0 || bureau.cnt_dbt_lss == nil"
+  "Reject if applicant has any 30+ DPD in last 12M"
+  → "bureau.cnt_30plus_dpd_last12months == 0 || bureau.cnt_30plus_dpd_last12months == nil"
 
-  "Reject if bureau.max_dpd_inlast12months > 30"
-  → approveCondition: "bureau.max_dpd_inlast12months <= 30 || bureau.max_dpd_inlast12months == nil"
+  "Reject if any co-applicant is RBI defaulter"
+  → "none(input.applicants, {#.rbi_defaulter_flag == true})"
 
-### Add nil checks for bureau numeric fields in REJECT conditions
-Bureau data can be absent. Always add "|| field == nil" when rejecting on a numeric bureau field.
+### Bureau numeric fields — always add nil check on reject conditions
+  "Reject if bureau.cnt_suit_filed >= 1"
+  → "bureau.cnt_suit_filed_willful_defaul == 0 || bureau.cnt_suit_filed_willful_defaul == nil"
 
-### Negative list fields use string values
-Negative list input fields (NCLT, RBI, UNSC, etc.) store "positive" (found on list = BAD)
-or "negative" (not found = GOOD).
-  → approveCondition: 'input.nclt_list_presence == "negative" || input.nclt_list_presence == nil'
+### Negative list fields store "positive" (BAD) or "negative" (GOOD)
+  → 'input.nclt_list_presence == "negative" || input.nclt_list_presence == nil'
 
-### Bureau Score with HIT/NO-HIT
-HIT/NO-HIT is computed by the "model" modelSet as expression "hit_no_hit".
-Reference it from ruleSets or other nodes as  model.hit_no_hit
+### Array-of-object inputs (applicants, docs, collateral, etc.)
+  Check across all items  : all(input.applicants, {#.age >= 21})
+  Check any item          : any(input.applicants, {#.rbi_defaulter_flag == true})
+  Count matching items    : count(input.applicants, {#.income_considered == true}) >= 1
+  Access nested property  : input.collateral[0].valuation
+  Optional chain on array : input.applicants?.age
 
-  "Bureau Score >= 700 and HIT required"
-  → approveCondition: "bureau.bureauscore >= 700 && model.hit_no_hit == true"
-
-  "Bureau Score >= 700, NO-HIT also allowed"
-  → approveCondition: "(bureau.bureauscore >= 700 && model.hit_no_hit == true) || model.hit_no_hit == false"
-
-### Positive (accept) conditions pass through unchanged
-  "Business Vintage >= 12 months"  → approveCondition: "input.business_vintage >= 12"
-  "Age between 21 and 65"          → approveCondition: "input.age >= 21 && input.age <= 65"
+### ModelSet expressions — arithmetic, conditionals, array aggregation
+  Simple arithmetic       : input.income - sum(map(input.applicants, {#.emi}))
+  Conditional             : input.requested_loan_amount <= 5000000 ? 2 : 4
+  Ternary chain           : input.age >= 65 ? "senior" : input.age >= 21 ? "adult" : "minor"
+  Array sum               : sum(map(input.collateral, {#.valuation}))
+  Date difference (days)  : (now() - date(input.banking.statement_pull_date)).Hours() / 24
 
 ## Quick-reference Examples
-| Policy Text                              | approveCondition                                                           |
-|------------------------------------------|----------------------------------------------------------------------------|
-| Bureau Score >= 700 – Accept             | bureau.bureauscore >= 700 && model.hit_no_hit == true                      |
-| Max Overdue > 2000 – Reject              | bureau.max_overdue <= 2000 \\|\\| bureau.max_overdue == nil                   |
-| Write-off count > 0 – Reject            | bureau.cnt_wo_settled_restructured_last24months == 0 \\|\\| ...== nil         |
-| NCLT match not found – Accept           | input.nclt_list_presence == "negative" \\|\\| ...== nil                       |
-| Suit filed count > 0 – Reject           | bureau.cnt_suit_filed_willful_defaul == 0 \\|\\| ...== nil                    |
-| Max DPD last 24M > 30 – Reject          | bureau.max_dpd_inlast24months <= 30 \\|\\| ...== nil                          |
-| Business Vintage >= 12 months – Accept  | input.business_vintage >= 12                                               |
-| Use scorecard WOE sum in eligibility    | scorecard.total_score + model.age_at_maturity                              |
-| EMI using earlier expr in same modelSet | PV(interest, max_tenure, max_emi, 0, 0)   ← bare names, same modelSet     |
+| Policy Text                                        | Expression                                                              |
+|----------------------------------------------------|-------------------------------------------------------------------------|
+| Bureau Score >= 700 – Accept                       | bureau.bureauscore >= 700 && model.hit_no_hit == true                   |
+| Max Overdue > 2000 – Reject                        | bureau.max_overdue <= 2000 \\|\\| bureau.max_overdue == nil              |
+| All applicants age >= 21                           | all(input.applicants, {#.age >= 21})                                    |
+| Any co-applicant is RBI defaulter – Reject         | none(input.applicants, {#.rbi_defaulter_flag == true})                  |
+| At least 1 co-applicant exists                     | count(input.applicants, {#.applicant_type == "co-applicant"}) >= 1      |
+| Spouse present for married main applicant          | any(input.applicants, {#.relation_with_applicant == "spouse"})          |
+| Business vintage >= 2 if loan <= 50L else >= 4     | input.requested_loan_amount <= 5000000 ? input.business_vintage >= 2 : input.business_vintage >= 4 |
+| Statement not older than 30 days                   | (now() - date(input.statement_pull_date)).Hours() / 24 <= 30            |
+| PAN 4th character is 'P'                           | input.companyPan != nil && split(input.companyPan, "")[3] == "P"        |
+| Sum of shareholding >= 51%                         | sum(map(input.applicants, {#.shareholding})) >= 51                      |
+| NCLT list not found – Accept                       | input.nclt_list_presence == "negative" \\|\\| input.nclt_list_presence == nil |
+| Business vintage >= 12 months                      | input.business_vintage >= 12                                            |
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -418,6 +547,8 @@ Valid types:
   "account_opening_checks"     – New account opening / account count rules
   "surrogate_policy"           – Surrogate/alternative policy rules
   "scorecard"                  – Scorecard model features, WOE coefficients, bureau feature bins
+  "modelset"                   – Computed/derived values: offer calculation, interest rate tables, risk bucket grids,
+                                 pricing matrices, income derivation, FOIR/EMI limits — NOT binary pass/fail rules
   "eligibility"                – Loan amount / EMI / FOIR computations
   "exposure"                   – Internal exposure or portfolio limit rules
   "common_rules"               – Shared rules used across programs
@@ -616,8 +747,8 @@ Use when: output depends on combinations of variable ranges (e.g. interest rate 
       "default": "22",
       "headers": ["bureau.score", "input.income"],
       "rows": [
-        {"columns": [{"name": "bureau.score", "value": "> 800"}, {"name": "input.income", "value": "> 80000"}], "output": "12.12"},
-        {"columns": [{"name": "bureau.score", "value": "> 800"}, {"name": "input.income", "value": "60000..80000"}], "output": "14"}
+        {"columns": [{"name": "bureau.score", "value": "> 800"}, {"name": "input.income", "value": "> 80000"}], "output": "\"12.12\""},
+        {"columns": [{"name": "bureau.score", "value": "> 800"}, {"name": "input.income", "value": "60000..80000"}], "output": "\"14\""}
       ]
     }
   }
@@ -633,24 +764,31 @@ Use when: output depends on combinations of variable ranges (e.g. interest rate 
 ### 3. matrix
 A 2D grid: one row-variable × one column-variable → cell output value.
 Use when: output is a grid lookup (e.g. risk bucket by age × obligation bracket).
+
+Complete example — 3 row conditions × 4 column conditions:
   {
     "name": "risk_bucket",
     "type": "matrix",
     "condition": "",
     "matrix": {
-      "globalRowIndex": <total_row_conditions_count>,
-      "globalColumnIndex": <total_col_conditions_count>,
+      "globalRowIndex": 3,
+      "globalColumnIndex": 4,
       "rows": [
         {
           "header": "input.age",
           "index": 0,
           "conditions": [
             {"index": 0, "condition": "21..30", "child": null},
-            {"index": 1, "condition": "30..45", "child": null}
+            {"index": 1, "condition": "30..45", "child": null},
+            {"index": 2, "condition": "45..60", "child": null}
           ]
         },
-        {"header": "No matches", "index": <N>, "isNoMatches": true,
-         "conditions": [{"index": <N>, "condition": "true", "child": null}]}
+        {
+          "header": "No matches",
+          "index": 3,
+          "isNoMatches": true,
+          "conditions": [{"index": 3, "condition": "true", "child": null}]
+        }
       ],
       "columns": [
         {
@@ -658,27 +796,38 @@ Use when: output is a grid lookup (e.g. risk bucket by age × obligation bracket
           "index": 0,
           "conditions": [
             {"index": 0, "condition": "< 35000", "child": null},
-            {"index": 1, "condition": "35000..65000", "child": null}
+            {"index": 1, "condition": "35000..65000", "child": null},
+            {"index": 2, "condition": "65000..100000", "child": null},
+            {"index": 3, "condition": "> 100000", "child": null}
           ]
         },
-        {"header": "No matches", "index": <M>, "isNoMatches": true,
-         "conditions": [{"index": <M>, "condition": "true", "child": null}]}
+        {
+          "header": "No matches",
+          "index": 4,
+          "isNoMatches": true,
+          "conditions": [{"index": 4, "condition": "true", "child": null}]
+        }
       ],
       "values": [
-        ["A", "B", "F"],
-        ["A", "A", "F"],
-        ["F", "F", "F"]
+        ["A", "B", "C", "D", "F"],
+        ["A", "A", "B", "C", "F"],
+        ["A", "B", "C", "D", "F"],
+        ["F", "F", "F", "F", "F"]
       ]
     }
   }
 
   matrix rules:
-  - Always add a "No matches" row (isNoMatches: true) at the end of rows array.
-  - Always add a "No matches" column (isNoMatches: true) at the end of columns array.
-  - globalRowIndex = index value of the "No matches" row.
-  - globalColumnIndex = index value of the "No matches" column.
-  - values is a 2D array: rows[i] × columns[j] → values[i][j].
-    The "No matches" row and column must also have entries (usually a fallback like "F" or "0").
+  - R = number of data row conditions; C = number of data col conditions.
+  - globalRowIndex = R  (= the index field on the "No matches" row).
+  - globalColumnIndex = C  (= the index field on the "No matches" column).
+  - The rows array has exactly one data-predictor entry (index 0, all conditions listed)
+    plus one "No matches" entry (index R, isNoMatches: true, single condition "true").
+  - The columns array mirrors this: one data-predictor entry plus one "No matches" entry (index C).
+  - values is a 2D array of size (R+1) × (C+1): values[i][j] is the output for
+    data row condition i and data column condition j; the last row and last column hold
+    the fallback value (same string, e.g. "F" or "0").
+  - All condition indices must be consecutive integers (0, 1, 2 … R for rows; 0 … C for columns).
   - Condition syntax: "21..30", "< 35000", "> 100000", "true"
 """
 
@@ -686,6 +835,44 @@ Use when: output is a grid lookup (e.g. risk bucket by age × obligation bracket
 # ─────────────────────────────────────────────────────────────────────────────
 # ELIGIBILITY COMPUTATIONS PROMPT
 # ─────────────────────────────────────────────────────────────────────────────
+
+def get_modelset_prompt(section_content: str, modelset_name: str) -> str:
+    return f"""
+{SYSTEM_PROMPT}
+
+Extract computed expressions from the section below.
+These become entries in a modelSet node named "{modelset_name}".
+
+{MODELSET_EXPRESSION_TYPES}
+
+UPSTREAM NODES AVAILABLE (all run before this modelSet):
+  bureau.*          → raw bureau fields
+  bank.*            → bank statement fields (ABB, salary, bounce, EMI, etc.)
+  input.*           → application input fields (anything not in bureau or bank)
+  model.<expr>      → e.g. model.hit_no_hit, model.age_at_maturity
+  scorecard.<feat>  → scorecard expression outputs (if scorecard exists)
+
+WITHIN THE SAME "{modelset_name}" modelSet:
+  Reference earlier expressions by bare name (no node prefix).
+
+SECTION CONTENT:
+{section_content}
+
+Rules:
+- Arithmetic / conditional formulas → type "expression"
+- Lookup tables (flat rows, one condition per row) → type "decisionTable"
+- 2D grids (one row-variable × one column-variable) → type "matrix"
+
+Return ONLY a valid JSON array of expression objects. Every object must include:
+- name, type, condition (empty string for decisionTable/matrix)
+- For type "decisionTable": include the full "decisionTableRules" object
+  (default, headers, rows with all columns and outputs).
+- For type "matrix": include the full "matrix" object
+  (globalRowIndex, globalColumnIndex, rows, columns, values).
+Do NOT return shells or placeholders — include all rows, columns, and cell values extracted
+from the section content.
+"""
+
 
 def get_eligibility_prompt(section_content: str) -> str:
     return f"""
@@ -720,9 +907,14 @@ Rules:
 - Lookup tables with flat row/column conditions → type "decisionTable"
 - 2D grid (one row-variable × one column-variable) → type "matrix"
 
-Return ONLY a valid JSON array of expression objects.
-Each object must have at minimum: name, type, condition (empty string if decisionTable/matrix).
-Include decisionTableRules for decisionTable type, matrix object for matrix type.
+Return ONLY a valid JSON array of expression objects. Every object must include:
+- name, type, condition (empty string for decisionTable/matrix)
+- For type "decisionTable": include the full "decisionTableRules" object
+  (default, headers, rows with all columns and outputs).
+- For type "matrix": include the full "matrix" object
+  (globalRowIndex, globalColumnIndex, rows, columns, values).
+Do NOT return shells or placeholders — include all rows, columns, and cell values extracted
+from the section content.
 """
 
 
@@ -760,5 +952,9 @@ Choose the correct type for each feature:
 Map all input variable names to the bureau.* namespace using the Bureau Fields table.
 Use "0" as the default for decisionTable WOE features.
 
-Return ONLY a valid JSON array of expression objects.
+Return ONLY a valid JSON array of expression objects. Every object must include:
+- name, type, condition (empty string for decisionTable/matrix)
+- For type "decisionTable": include the full "decisionTableRules" object.
+- For type "matrix": include the full "matrix" object with all rows, columns, and values.
+Do NOT return shells — include all data extracted from the section.
 """

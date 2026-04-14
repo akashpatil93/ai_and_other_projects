@@ -46,12 +46,12 @@ export const apiClient = {
     return res.data
   },
 
-  async generateWorkflow(fileId: string, context = ''): Promise<{
+  async generateWorkflow(fileId: string, context = '', samplePayload = ''): Promise<{
     workflow_id: string
     workflow: WorkflowData
     validation: ValidationResult
   }> {
-    const res = await api.post('/api/generate', { file_id: fileId, context })
+    const res = await api.post('/api/generate', { file_id: fileId, context, sample_payload: samplePayload })
     return res.data
   },
 

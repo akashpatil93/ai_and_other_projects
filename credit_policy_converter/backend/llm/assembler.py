@@ -60,6 +60,48 @@ _EMPTY_MATRIX: Dict[str, Any] = {
 }
 
 
+def _wrap_if_text(value: Any) -> Any:
+    """Wrap a plain text string in escaped quotes; leave numbers and booleans unchanged.
+
+    "A"     → '"A"'      (text → wrapped)
+    "12.12" → "12.12"    (number → unchanged)
+    "true"  → "true"     (boolean → unchanged)
+    '"A"'   → '"A"'      (already wrapped → unchanged)
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    v = value.strip()
+    if v.startswith('"') and v.endswith('"'):
+        return value  # already wrapped
+    is_boolean = v.lower() in ("true", "false")
+    is_numeric = False
+    try:
+        float(v)
+        is_numeric = True
+    except (ValueError, TypeError):
+        pass
+    return value if (is_numeric or is_boolean) else f'"{value}"'
+
+
+def _quote_dt_outputs(dt_rules: Dict) -> Dict:
+    """Apply text-wrapping to the default value and every row output in a
+    decisionTableRules object.
+
+    Plain text strings are wrapped ("A" → '"A"'); numbers and booleans are unchanged.
+    """
+    import copy as _copy
+    rules = _copy.deepcopy(dt_rules)
+
+    if rules.get("default") is not None:
+        rules["default"] = _wrap_if_text(rules["default"])
+
+    for row in rules.get("rows") or []:
+        if row.get("output") is not None:
+            row["output"] = _wrap_if_text(row["output"])
+
+    return rules
+
+
 def _modelset(name: str, x: int, y: int, expressions: List[Dict], next_state: Dict) -> Dict:
     expr_objs = []
     for i, expr in enumerate(expressions):
@@ -84,7 +126,7 @@ def _modelset(name: str, x: int, y: int, expressions: List[Dict], next_state: Di
                 "seqNo": i,
                 "condition": "",
                 "type": "decisionTable",
-                "decisionTableRules": expr.get("decisionTableRules", _EMPTY_DT.copy()),
+                "decisionTableRules": _quote_dt_outputs(expr.get("decisionTableRules", _EMPTY_DT.copy())),
                 "matrix": _EMPTY_MATRIX.copy(),
                 "tag": _uuid(),
             }
@@ -131,7 +173,7 @@ def _is_muted(rule: Dict) -> bool:
     return bool(val)
 
 
-def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
+def assemble_workflow(extracted: Dict[str, Any], sample_payload: str = "") -> Dict[str, Any]:
     """Build the complete workflow JSON from Claude-extracted data."""
 
     # ── Build the ordered list of rulesets ───────────────────────────
@@ -156,6 +198,7 @@ def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
 
     elig_exprs = extracted.get("eligibility_expressions", [])
     scorecard_exprs = extracted.get("scorecard_expressions", [])
+    named_modelsets: List[Dict] = extracted.get("named_modelsets", [])
 
     # For the final_decision approve condition, a ruleset "counts" only if it
     # has at least one non-muted rule.
@@ -242,23 +285,31 @@ def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
             {"name": "age_at_maturity", "condition": "input.age + 3", "type": "expression"}
         )
 
-    def first_after_model() -> Dict:
+    # Build the ordered pre-ruleset chain:
+    # dataSource → [scorecard] → [model] → [named modelsets...] → first ruleset / final_decision
+    def _first_ruleset_ref() -> Dict:
         if all_rulesets:
             return {"name": all_rulesets[0]["name"], "type": "ruleSet"}
         return {"name": "final_decision", "type": "branch"}
+
+    def _first_named_modelset_or_ruleset() -> Dict:
+        if named_modelsets:
+            return {"name": named_modelsets[0]["name"], "type": "modelSet"}
+        return _first_ruleset_ref()
 
     # What does the dataSource flow into?
     after_datasource = (
         {"name": "scorecard", "type": "modelSet"}
         if scorecard_exprs
-        else ({"name": "model", "type": "modelSet"} if model_exprs else first_after_model())
+        else ({"name": "model", "type": "modelSet"} if model_exprs else _first_named_modelset_or_ruleset())
     )
 
-    # What does the last pre-ruleset node (scorecard or model) flow into?
-    if model_exprs:
-        after_scorecard = {"name": "model", "type": "modelSet"}
-    else:
-        after_scorecard = first_after_model()
+    # What does scorecard flow into?
+    after_scorecard = (
+        {"name": "model", "type": "modelSet"}
+        if model_exprs
+        else _first_named_modelset_or_ruleset()
+    )
 
     # ── 2. DataSource — bureau + bank (if needed) in one node ────────
     sources = [{"name": "bureau", "id": 41238, "seqNo": 0, "type": "finboxSource", "tag": _uuid()}]
@@ -281,7 +332,20 @@ def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
         ))
 
     if model_exprs:
-        nodes.append(_modelset("model", place(BASE_MEDIUM), Y_MAIN, model_exprs, next_state=first_after_model()))
+        nodes.append(_modelset(
+            "model", place(BASE_MEDIUM), Y_MAIN, model_exprs,
+            next_state=_first_named_modelset_or_ruleset(),
+        ))
+
+    # ── Named modelsets (between model and first ruleset) ────────────
+    for i, ms in enumerate(named_modelsets):
+        ms_name = ms["name"]
+        ms_exprs = ms.get("expressions", [])
+        if i + 1 < len(named_modelsets):
+            ms_next = {"name": named_modelsets[i + 1]["name"], "type": "modelSet"}
+        else:
+            ms_next = _first_ruleset_ref()
+        nodes.append(_modelset(ms_name, place(BASE_MEDIUM), Y_MAIN, ms_exprs, next_state=ms_next))
 
     def _muted_switch(sw_name: str, rules: List[Dict], forward: Dict) -> Dict:
         """Muted ruleSets: pass and reject both continue forward. cantDecide too if present."""
@@ -293,14 +357,15 @@ def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
             conditions.append({"name": "cantDecide", "nextState": forward})
         return _switch(sw_name, conditions)
 
-    def _active_switch(sw_name: str, rules: List[Dict], pass_next: Dict) -> Dict:
-        """Active ruleSets: pass continues, reject/cantDecide go to end_rejected."""
+    def _active_switch(sw_name: str, rules: List[Dict], next_node: Dict) -> Dict:
+        """Active ruleSets: all outcomes (pass/reject/cantDecide) continue to the next node.
+        The final_decision branch is the single point that aggregates all ruleset decisions."""
         conditions = [
-            {"name": "pass",   "nextState": pass_next},
-            {"name": "reject", "nextState": {"name": END_REJECTED, "type": "end"}},
+            {"name": "pass",   "nextState": next_node},
+            {"name": "reject", "nextState": next_node},
         ]
         if _has_cant_decide(rules):
-            conditions.append({"name": "cantDecide", "nextState": {"name": END_REJECTED, "type": "end"}})
+            conditions.append({"name": "cantDecide", "nextState": next_node})
         return _switch(sw_name, conditions)
 
     # ── 5–8. Chain all rulesets in order ─────────────────────────────
@@ -346,69 +411,54 @@ def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
         "nextState": {"type": "switch", "name": fd_sw},
     })
 
+    # Pre-generate UUIDs for end nodes so nextState references match the node name
+    end_approved_id = _uuid()
+    end_rejected_id = _uuid()
+
     approve_path = (
         {"name": "eligibility", "type": "modelSet"}
         if elig_exprs
-        else {"name": END_APPROVED, "type": "end"}
+        else {"name": end_approved_id, "type": "end"}
     )
     nodes.append(_switch(fd_sw, [
         {"name": "approve", "nextState": approve_path},
-        {"name": "reject",  "nextState": {"name": END_REJECTED, "type": "end"}},
+        {"name": "reject",  "nextState": {"name": end_rejected_id, "type": "end"}},
     ]))
 
     # ── 10. Eligibility modelSet ──────────────────────────────────────
     if elig_exprs:
         nodes.append(_modelset(
             "eligibility", place(BASE_MEDIUM), Y_MAIN, elig_exprs,
-            next_state={"name": END_APPROVED, "type": "end"},
+            next_state={"name": end_approved_id, "type": "end"},
         ))
 
     # ── 11. End nodes ─────────────────────────────────────────────────
-    # Both end nodes share the same x (final column), offset vertically.
-    # decisionNode.output must include every key from the outputs array.
-    import json as _json
-
-    outputs = [
-        {"name": "decision",      "dataType": "text"},
-        {"name": "amount",        "dataType": "number"},
-        {"name": "interest_rate", "dataType": "number"},
-        {"name": "tenure",        "dataType": "number"},
-        {"name": "emi",           "dataType": "number"},
-        {"name": "foir",          "dataType": "number"},
-    ]
-
-    def _end_output(terminal: str) -> str:
-        """Build decisionNode output JSON containing every declared output field."""
-        obj: Dict[str, Any] = {}
-        for out in outputs:
-            if out["name"] == "decision":
-                obj["decision"] = terminal          # "approved" or "rejected"
-            elif out["dataType"] == "number":
-                obj[out["name"]] = 0
-            else:
-                obj[out["name"]] = ""
-        return _json.dumps(obj)
+    outputs: List[Dict] = []
 
     end_x = x_cursor   # x_cursor already points past the last node
     nodes.append({
         "type": "end",
-        "name": END_APPROVED,
+        "name": end_approved_id,
         "endNodeName": "approved",
         "tag": _uuid(),
-        "decisionNode": {"output": _end_output("approved")},
+        "from": "decisionNode",
+        "workflowState": {"type": "", "outcomeLogic": None},
+        "decisionNode": {},
         "metadata": {"x": end_x, "y": Y_APPROVED, "nodeColor": 3},
     })
     nodes.append({
         "type": "end",
-        "name": END_REJECTED,
+        "name": end_rejected_id,
         "endNodeName": "rejected",
         "tag": _uuid(),
-        "decisionNode": {"output": _end_output("rejected")},
+        "from": "decisionNode",
+        "workflowState": {"type": "", "outcomeLogic": None},
+        "decisionNode": {},
         "metadata": {"x": end_x, "y": Y_REJECTED, "nodeColor": 2},
     })
 
     # ── 12. Build inputs array ────────────────────────────────────────
-    inputs = _build_inputs(nodes)
+    inputs = _build_inputs(nodes, sample_payload=sample_payload)
 
     return {
         "nodes": nodes,
@@ -422,17 +472,97 @@ def assemble_workflow(extracted: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _build_inputs(nodes: List[Dict]) -> List[Dict]:
+def _build_inputs(nodes: List[Dict], sample_payload: str = "") -> List[Dict]:
     """Scan all node expressions and build the inputs array.
 
     - input.* variables → scalar inputs (text or number)
-    - bank.* variables  → single object input with children (one per referenced field)
+    - bank.* variables  → object input with numeric children
     - bureau.* variables come from the dataSource node and are NOT listed in inputs
+    - Any other namespace.* (e.g. applicants.*, collateral.*) detected in conditions
+      → object inputs; marked is_array=true when the namespace is used inside an
+        array predicate function (all/any/filter/map/etc.)
+
+    sample_payload: optional JSON string of a representative API request body.
+      When provided, each object input's `schema` field is populated from the
+      matching top-level key in the payload (stringified back to JSON).
     """
+    import json as _json
+
     serialised = str(nodes)
 
+    # Parse the sample payload once; fall back to empty dict on any error.
+    try:
+        _payload: Dict[str, Any] = _json.loads(sample_payload) if sample_payload and sample_payload.strip() else {}
+        if not isinstance(_payload, dict):
+            _payload = {}
+    except Exception:
+        _payload = {}
+
+    def _schema_for(name: str) -> Any:
+        """Return the schema value for an object input, or None if not in payload."""
+        val = _payload.get(name)
+        if val is None:
+            return None
+        # BRE expects schema as a stringified JSON sample
+        return _json.dumps(val)
+
+    # ── payload-derived object inputs ─────────────────────────────────
+    # For every top-level payload key whose value is an array or dict,
+    # create a properly-typed object input using the payload structure.
+    # This runs before condition scanning so we know which namespaces are covered.
+    payload_namespaces: set = set()
+    payload_object_inputs: List[Dict] = []
+
+    for key, val in _payload.items():
+        if not isinstance(val, (list, dict)):
+            continue  # scalars are covered by input.* condition scanning
+
+        is_arr = isinstance(val, list)
+        # For arrays: use first element as the field template; for dicts: use directly
+        sample = (val[0] if val and isinstance(val[0], dict) else {}) if is_arr else val
+
+        oid = _uuid()
+        children = [
+            {
+                "id": _uuid(),
+                "name": f,
+                "dataType": "number" if isinstance(fv, (int, float)) and not isinstance(fv, bool) else "text",
+                "isNullable": True,
+                "defaultInput": None,
+                "children": None,
+                "parentID": oid,
+                "isArray": False,
+                "schema": None,
+                "operation": "",
+            }
+            for f, fv in sample.items()
+        ]
+        payload_object_inputs.append({
+            "id": oid,
+            "name": key,
+            "dataType": "object",
+            "isNullable": False,
+            "defaultInput": None,
+            "is_array": is_arr,
+            "schema": _schema_for(key),
+            "children": children,
+        })
+        payload_namespaces.add(key)
+
+    # BRE-internal namespaces: bureau from dataSource, model/scorecard from modelSet outputs,
+    # plus any named modelSet / ruleSet / branch node names (they produce output namespaces).
+    bre_node_names: set = set()
+    for node in nodes:
+        if node.get("type") in ("modelSet", "ruleSet", "branch"):
+            n = node.get("name", "")
+            if n:
+                bre_node_names.add(n)
+
+    # Also skip namespaces already covered by the payload to avoid duplicates.
+    SKIP_NS = {"bureau", "input", "bank", "model", "scorecard"} | bre_node_names | payload_namespaces
+
     # ── scalar input.* fields ─────────────────────────────────────────
-    input_vars = set(re.findall(r"input\.([a-zA-Z_][a-zA-Z0-9_]*)", serialised))
+    input_vars = set(re.findall(r"\binput\.([a-zA-Z_][a-zA-Z0-9_]*)\b", serialised))
 
     numeric_inputs = {
         "age", "business_vintage", "req_loan_amount", "loan_amount",
@@ -450,35 +580,67 @@ def _build_inputs(nodes: List[Dict]) -> List[Dict]:
             "schema": None,
         }
         for v in sorted(input_vars)
+        if v not in payload_namespaces  # skip names already defined as object inputs via payload
     ]
 
-    # ── bank object input (when bank.* fields are referenced) ─────────
-    bank_vars = sorted(set(re.findall(r"bank\.([a-zA-Z_][a-zA-Z0-9_]*)", serialised)))
-    if bank_vars:
-        # All bank fields are numeric (counts, amounts, ratios, percentages)
-        bank_children = [
+    def _object_children(parent_id: str, fields: List[str], numeric: bool = False) -> List[Dict]:
+        """Build the children list for an object input node."""
+        return [
             {
                 "id": _uuid(),
                 "name": field,
-                "dataType": "number",
+                "dataType": "number" if numeric else "text",
                 "isNullable": True,
                 "defaultInput": None,
-                "is_array": False,
+                "children": None,
+                "parentID": parent_id,
+                "isArray": False,
                 "schema": None,
+                "operation": "",
             }
-            for field in bank_vars
+            for field in fields
         ]
-        bank_input: List[Dict] = [{
-            "id": _uuid(),
-            "name": "bank",
+
+    def _object_input(name: str, is_arr: bool, fields: List[str], numeric: bool = False) -> Dict:
+        """Build a top-level object input node with children."""
+        oid = _uuid()
+        return {
+            "id": oid,
+            "name": name,
             "dataType": "object",
             "isNullable": False,
             "defaultInput": None,
-            "is_array": True,
-            "schema": None,
-            "children": bank_children,
-        }]
-    else:
-        bank_input = []
+            "is_array": is_arr,
+            "schema": _schema_for(name),
+            "children": _object_children(oid, fields, numeric=numeric),
+        }
 
-    return bank_input + scalar_inputs
+    # ── bank object input (when bank.* fields are referenced) ─────────
+    # Skip if bank was already defined via the sample payload.
+    bank_input: List[Dict] = []
+    if "bank" not in payload_namespaces:
+        bank_vars = sorted(set(re.findall(r"\bbank\.([a-zA-Z_][a-zA-Z0-9_]*)\b", serialised)))
+        if bank_vars:
+            bank_input = [_object_input("bank", is_arr=True, fields=bank_vars, numeric=True)]
+
+    # ── other object namespace inputs ─────────────────────────────────
+    # Find every `namespace.field` pair where namespace is lowercase and not already handled.
+    all_ns_refs = re.findall(r"\b([a-z][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b", serialised)
+    ns_fields: Dict[str, set] = {}
+    for ns, field in all_ns_refs:
+        if ns not in SKIP_NS:
+            ns_fields.setdefault(ns, set()).add(field)
+
+    # Namespaces that appear as the first argument of an array predicate function
+    # e.g. all(applicants, {...}) or filter(applicants, ...) → applicants is an array.
+    array_namespaces = set(re.findall(
+        r"\b(?:all|any|none|one|filter|map|sum|count|find|findIndex|reduce|groupBy|sortBy)\s*\(\s*([a-z][a-zA-Z0-9_]*)",
+        serialised,
+    ))
+
+    other_object_inputs: List[Dict] = [
+        _object_input(ns, is_arr=(ns in array_namespaces), fields=sorted(ns_fields[ns]))
+        for ns in sorted(ns_fields.keys())
+    ]
+
+    return payload_object_inputs + bank_input + other_object_inputs + scalar_inputs

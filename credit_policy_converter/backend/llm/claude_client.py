@@ -14,6 +14,7 @@ from .prompts import (
     get_classify_sections_prompt,
     get_eligibility_prompt,
     get_go_no_go_prompt,
+    get_modelset_prompt,
     get_scorecard_prompt,
     get_surrogate_policy_prompt,
 )
@@ -201,10 +202,12 @@ class ClaudeClient:
             "eligibility_expressions": [],
             "scorecard_expressions": [],
             "named_rulesets": [],
+            "named_modelsets": [],
         }
 
         # Accumulate rules per named ruleset (maintains insertion order)
         named_ruleset_map: Dict[str, List[Dict]] = {}
+        named_modelset_map: Dict[str, List[Dict]] = {}
 
         # Build context prefix to prepend to every extraction prompt
         context_block = (
@@ -227,16 +230,10 @@ class ClaudeClient:
                 get_classify_sections_prompt("\n".join(summary_lines)), max_tokens=1024
             )
             section_types = self._parse_json(classify_resp)
-            print(f"[debug] classify raw: {classify_resp[:300]}")
-            print(f"[debug] section_types parsed: {section_types}")
             if not isinstance(section_types, dict):
-                print("[debug] classification not a dict, falling back to name-based")
                 section_types = self._classify_by_name(sections)
-        except Exception as exc:
-            print(f"[debug] classify exception: {exc}")
+        except Exception:
             section_types = self._classify_by_name(sections)
-
-        print(f"[debug] final section_types: {section_types}")
 
         # Step 2 — process each section
         skip_types = {"metadata", "pre_read", "change_history", "exposure"}
@@ -245,8 +242,6 @@ class ClaudeClient:
             name = section["name"]
             stype = section_types.get(name, "metadata")
             text = section.get("text", "")
-
-            print(f"[debug] section '{name}' -> type='{stype}', text_len={len(text)}, skip={not text or stype in skip_types}")
 
             if not text or stype in skip_types:
                 continue
@@ -273,31 +268,39 @@ class ClaudeClient:
 
                     raw = await self._call(_inject(prompt), max_tokens=4096)
                     rules = self._parse_json(raw)
-                    print(f"[debug] section '{name}': raw_len={len(raw)}, rules_count={len(rules) if isinstance(rules, list) else 'not-a-list'}, raw_preview={raw[:200]}")
                     if isinstance(rules, list) and rules:
                         named_ruleset_map.setdefault(rs_key, []).extend(rules)
 
+                elif stype == "modelset":
+                    raw = await self._call(_inject(get_modelset_prompt(text, rs_key)), max_tokens=16384)
+                    exprs = self._parse_json(raw)
+                    if isinstance(exprs, list) and exprs:
+                        named_modelset_map.setdefault(rs_key, []).extend(exprs)
+
                 elif stype == "eligibility":
-                    raw = await self._call(_inject(get_eligibility_prompt(text)), max_tokens=4096)
+                    raw = await self._call(_inject(get_eligibility_prompt(text)), max_tokens=16384)
                     exprs = self._parse_json(raw)
                     if isinstance(exprs, list):
                         result["eligibility_expressions"].extend(exprs)
 
                 elif stype == "scorecard":
-                    raw = await self._call(_inject(get_scorecard_prompt(text)), max_tokens=8192)
+                    raw = await self._call(_inject(get_scorecard_prompt(text)), max_tokens=16384)
                     exprs = self._parse_json(raw)
                     if isinstance(exprs, list):
                         result["scorecard_expressions"].extend(exprs)
 
             except Exception as exc:
                 print(f"[warn] Error processing section '{name}': {exc}")
-                import traceback; traceback.print_exc()
                 continue
 
-        # Build the ordered named_rulesets list from accumulated map
+        # Build ordered lists from accumulated maps
         result["named_rulesets"] = [
             {"name": rs_name, "rules": rules}
             for rs_name, rules in named_ruleset_map.items()
+        ]
+        result["named_modelsets"] = [
+            {"name": ms_name, "expressions": exprs}
+            for ms_name, exprs in named_modelset_map.items()
         ]
 
         return result

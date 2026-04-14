@@ -22,7 +22,7 @@ export default function App() {
   const [showKeyModal, setShowKeyModal] = useState(() => !keyStore.get())
   const [hasKey, setHasKey] = useState(() => Boolean(keyStore.get()))
 
-  const handleFileUpload = async (file: File, context: string) => {
+  const handleFileUpload = async (file: File, context: string, samplePayload: string) => {
     setError(null)
     setStep('generating')
 
@@ -37,7 +37,7 @@ export default function App() {
       await new Promise((r) => setTimeout(r, 600))
 
       setStatus('Extracting rules with Claude AI...')
-      const result = await apiClient.generateWorkflow(uploaded.file_id, context)
+      const result = await apiClient.generateWorkflow(uploaded.file_id, context, samplePayload)
 
       setWorkflowId(result.workflow_id)
       setWorkflow(result.workflow)
