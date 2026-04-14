@@ -1354,6 +1354,7 @@ func BuildInputs(nodes []interface{}, samplePayload string) []map[string]interfa
 		}
 	}
 
+	// BRE expects the actual list/dict value, not a JSON string
 	schemaFor := func(name string) interface{} {
 		if payload == nil {
 			return nil
@@ -1362,8 +1363,7 @@ func BuildInputs(nodes []interface{}, samplePayload string) []map[string]interfa
 		if !ok {
 			return nil
 		}
-		b, _ := json.Marshal(val)
-		return string(b)
+		return val
 	}
 
 	newUUID := func() string {
@@ -1418,7 +1418,7 @@ func BuildInputs(nodes []interface{}, samplePayload string) []map[string]interfa
 					"id":           newUUID(),
 					"name":         fk,
 					"dataType":     dt,
-					"isNullable":   true,
+					"isNullable":   false,
 					"defaultInput": nil,
 					"children":     nil,
 					"parentID":     oid,
@@ -1435,6 +1435,9 @@ func BuildInputs(nodes []interface{}, samplePayload string) []map[string]interfa
 				"isNullable":   false,
 				"defaultInput": nil,
 				"is_array":     isList,
+				"isArray":      isList,
+				"parentID":     "",
+				"operation":    "",
 				"schema":       schemaFor(key),
 				"children":     children,
 			})
@@ -1512,7 +1515,7 @@ func BuildInputs(nodes []interface{}, samplePayload string) []map[string]interfa
 					"id":           newUUID(),
 					"name":         f,
 					"dataType":     "number",
-					"isNullable":   true,
+					"isNullable":   false,
 					"defaultInput": nil,
 					"children":     nil,
 					"parentID":     oid,
@@ -1528,6 +1531,9 @@ func BuildInputs(nodes []interface{}, samplePayload string) []map[string]interfa
 				"isNullable":   false,
 				"defaultInput": nil,
 				"is_array":     true,
+				"isArray":      true,
+				"parentID":     "",
+				"operation":    "",
 				"schema":       schemaFor("bank"),
 				"children":     children,
 			})
@@ -1575,7 +1581,7 @@ func BuildInputs(nodes []interface{}, samplePayload string) []map[string]interfa
 				"id":           newUUID(),
 				"name":         f,
 				"dataType":     "text",
-				"isNullable":   true,
+				"isNullable":   false,
 				"defaultInput": nil,
 				"children":     nil,
 				"parentID":     oid,
@@ -1591,6 +1597,9 @@ func BuildInputs(nodes []interface{}, samplePayload string) []map[string]interfa
 			"isNullable":   false,
 			"defaultInput": nil,
 			"is_array":     arrayNS[ns],
+			"isArray":      arrayNS[ns],
+			"parentID":     "",
+			"operation":    "",
 			"schema":       schemaFor(ns),
 			"children":     children,
 		})
