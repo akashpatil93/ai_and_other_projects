@@ -121,6 +121,7 @@ const bureauFields = `
 
 const bankFields = `
 ## Bank Statement Fields  (prefix: bank.)
+These come from the Bank Statement data source. Use the exact variable names below.
 
 ### Average Balance & Cash Flow
 | Policy Document Term                          | JSON Field                                          |
@@ -130,6 +131,22 @@ const bankFields = `
 | Min End-of-Day Balance (last 3M)              | bank.eod_balance_min_3mo                            |
 | Average Monthly Credits (income)              | bank.income_avg                                     |
 | Average Monthly Debits (expenses)             | bank.expense_avg                                    |
+| Monthly income M+0 (current month)            | bank.income_0                                       |
+| Monthly income M-1                            | bank.income_1                                       |
+| Monthly income M-2                            | bank.income_2                                       |
+| Monthly income M-3                            | bank.income_3                                       |
+| Monthly income M-4 to M-11 (older months)    | bank.income_4 … bank.income_11                      |
+| Monthly expense M+0 (current month)           | bank.expense_0                                      |
+| Monthly expense M-1 to M-11                   | bank.expense_1 … bank.expense_11                    |
+
+### Salary / Regular Credit
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Salary credit count (last 3M)                 | bank.salary_credit_count_3mo                        |
+| Salary credit count (last 6M)                 | bank.salary_credit_count_6mo                        |
+| Average salary credit amount                  | bank.salary_credit_avg                              |
+| Last salary credit amount                     | bank.salary_credit_last                             |
+| Months since last salary credit               | bank.months_since_last_salary                       |
 
 ### Bounce Metrics
 | Policy Document Term                          | JSON Field                                          |
@@ -142,6 +159,7 @@ const bankFields = `
 | ACH / NACH bounce count (last 6M)             | bank.ach_bounce_count_6mo                           |
 | EMI bounce count (last 3M)                    | bank.emi_bounce_count_3mo                           |
 | EMI bounce count (last 6M)                    | bank.emi_bounce_count_6mo                           |
+| Bounce rate (bounces / total transactions)    | bank.bounce_rate                                    |
 
 ### EMI & Obligation
 | Policy Document Term                          | JSON Field                                          |
@@ -150,6 +168,35 @@ const bankFields = `
 | Total EMI debit amount (last 6M avg)          | bank.emi_debit_avg_6mo                              |
 | EMI to income ratio (bank-derived FOIR)       | bank.emi_to_income_ratio                            |
 | Number of unique EMI debits (last 3M)         | bank.emi_debit_count_3mo                            |
+| Recurring debit count (NACH/SI)               | bank.recurring_debit_count_3mo                      |
+
+### Cash Transactions
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Average cash withdrawal (monthly)             | bank.cash_withdrawal_avg                            |
+| Cash withdrawal to income ratio               | bank.cash_to_income_ratio                           |
+| Average cash deposit (monthly)                | bank.cash_deposit_avg                               |
+
+### UPI & Digital Transactions
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| UPI credit transaction count (last 3M)        | bank.upi_credit_count_3mo                           |
+| UPI debit transaction count (last 3M)         | bank.upi_debit_count_3mo                            |
+| UPI credit amount (last 3M)                   | bank.upi_credit_amt_3mo                             |
+| UPI debit amount (last 3M)                    | bank.upi_debit_amt_3mo                              |
+
+### Overdraft / OD Utilization
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Overdraft utilization percentage              | bank.od_utilization_pct                             |
+| Number of days OD utilized (last 3M)          | bank.od_days_3mo                                    |
+
+### Vintage & Summary
+| Policy Document Term                          | JSON Field                                          |
+|-----------------------------------------------|-----------------------------------------------------|
+| Bank statement vintage (months available)     | bank.vintage_months                                 |
+| Number of accounts in statement               | bank.account_count                                  |
+| Total transaction count (last 3M)             | bank.total_txn_count_3mo                            |
 `
 
 const inputFields = `
@@ -163,6 +210,21 @@ const inputFields = `
 | Occupation Type               | input.occupation_type                         | text   |
 | RBI Defaulter                 | input.rbi_defaulter                           | text   |
 | NCLT List                     | input.nclt_list_presence                      | text   |
+| Shell Companies SEBI          | input.shell_companies_by_sebi_presence        | text   |
+| UNSC Sanctions                | input.unsc_sanctions_list_presence            | text   |
+| Watch Out Investors           | input.watch_out_investors_presence            | text   |
+| NHB Wilful Defaulter          | input.nhb_wilful_defaulter                    | text   |
+| Debarred Entities             | input.debarred_entities                       | text   |
+| Arbitral Awards               | input.arbitral_awards                         | text   |
+| Defaulting Client             | input.defaulting_client                       | text   |
+| EU Sanctions                  | input.european_union_sanctions                | text   |
+| Expelled Members              | input.expelled_members                        | text   |
+| HM Treasury List              | input.her_majesteys_treasury_list             | text   |
+| Interpol Red Notice           | input.interpol_rednotice                      | text   |
+| IRDA Blacklisted              | input.irda_blacklisted_agents                 | text   |
+| MCA Proclaimed Offenders      | input.mca_proclaimed_offenders                | text   |
+| UAPA List                     | input.unlawful_activities_prevention_act_list | text   |
+| Profile                       | input.profile                                 | text   |
 | Requested Loan Amount         | input.req_loan_amount                         | number |
 `
 
@@ -171,31 +233,78 @@ const modelFields = `
 When a bureau pull returns no record (NO-HIT), all bureau fields will be nil.
 Handle this using the standard nil-check pattern: bureau.<field> == nil
 Do NOT reference model.hit_no_hit — there is no "model" modelSet in this workflow.
+
+Reference syntax from a ruleSet or another modelSet:
+  scorecard.<feature_name>  → numeric output of a scorecard modelSet expression
 `
 
 const expressionRefRules = `
 ## CRITICAL: How to reference expression values between nodes
 
 ### Rule 1 — Within the same modelSet: use the expression name directly
+If expression_B is defined after expression_A inside the SAME modelSet, expression_B
+can reference expression_A by its bare name:
+
+  modelSet "offer_calc":
+    expression_A: name="max_emi",  condition="(input.income - bureau.total_outstanding_amount) * 0.7"
+    expression_B: name="amount",   condition="PV(interest, max_tenure, max_emi, 0, 0)"
+                                                            ↑                ↑
+                                    bare names — same modelSet, defined earlier in seqNo
+
 ### Rule 2 — Across different nodes: prefix with the SOURCE node name
+If the value was computed in a different modelSet (or is the outcome of a ruleSet),
+prefix with that node's name:
+
   <source_node_name>.<expression_name>
+
   Examples:
     scorecard.bureau_score_woe    → expression in the "scorecard" modelSet
     go_no_go_checks.decision      → the "decision" outcome of the "go_no_go_checks" ruleSet
+    surrogate_policy_checks.decision → outcome of the surrogate ruleSet
 
 ### Rule 3 — Node execution order matters
-  Start → bureau (dataSource) → scorecard → ruleSets → final_decision → eligibility → end
+A node can only reference outputs of nodes that appear EARLIER in the workflow.
+The workflow order is:
+  Start → bureau (dataSource) → bank (dataSource, if bank vars used)
+        → scorecard (optional modelSet)
+        → [muted_<name> ruleSets] → [active ruleSets]
+        → final_decision (branch) → eligibility (optional modelSet) → end
+
+So:
+  - ruleSet nodes can reference bureau.*, bank.*, input.*, scorecard.*
+  - "eligibility" can reference all of the above plus ruleSet decisions
+
+### Summary table
+| Where you are writing  | To use a value from       | Write                          |
+|------------------------|---------------------------|--------------------------------|
+| Inside modelSet M      | Earlier expression in M   | expression_name                |
+| Inside modelSet M      | Expression in modelSet N  | N.expression_name              |
+| Inside ruleSet R       | Expression in modelSet N  | N.expression_name              |
+| Inside branch          | RuleSet outcome           | ruleset_name.decision          |
 `
 
 const expressionSyntax = `
 ## Expression Language — Sentinel / Expr
 
-Data Source Prefixes:
-  bureau.*   → bureau pull fields
-  bank.*     → bank statement fields
-  input.*    → everything else
+The BRE uses the Expr expression language. All conditions and modelSet expressions
+must be written in valid Expr syntax.
 
-Operators:
+───────────────────────────────────────────────────────
+### Data Source Prefixes
+───────────────────────────────────────────────────────
+  bureau.*   → bureau pull fields (see Bureau Fields table)
+  bank.*     → bank statement fields (see Bank Fields table)
+  input.*    → everything else — application/request fields
+              If a policy variable is NOT in bureau or bank → use input.<name>
+
+Computed value cross-node references (see Expression Reference Rules):
+  <modelset_name>.<expr_name>   → output of a modelSet expression
+  <expr_name>                   → earlier expression in the SAME modelSet (bare name)
+  <ruleset_name>.decision       → "pass" / "reject" outcome of a ruleSet
+
+───────────────────────────────────────────────────────
+### Operators
+───────────────────────────────────────────────────────
   Arithmetic   : +  -  *  /  %  ^  **
   Comparison   : ==  !=  <  >  <=  >=
   Logical      : !  not  &&  and  ||  or
@@ -203,6 +312,22 @@ Operators:
   Nil coalesce : expr ?? fallback
   Optional     : obj?.field
   Membership   : "x" in ["x","y"]
+
+───────────────────────────────────────────────────────
+### Number Functions
+───────────────────────────────────────────────────────
+  max(a, b)   min(a, b)   abs(n)
+  ceil(n)     floor(n)    round(n)
+  int(v)      float(v)    string(v)
+
+───────────────────────────────────────────────────────
+### Array Functions
+───────────────────────────────────────────────────────
+  len(arr)                          → count of elements
+  all(arr, predicate)               → true if every element matches
+  any(arr, predicate)               → true if at least one matches
+  filter(arr, predicate)            → new array of matching elements
+  sum(arr)  /  sum(arr, predicate)  → numeric sum
 
 CRITICAL: Converting Policy Rules to approveCondition
 Always invert REJECT conditions into APPROVE conditions.
