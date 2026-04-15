@@ -345,6 +345,10 @@ func sanitizeName(name string) string {
 	re := regexp.MustCompile(`[^a-z0-9]+`)
 	n = re.ReplaceAllString(n, "_")
 	n = strings.Trim(n, "_")
+	// Strip leading numeric prefix (e.g. "1_core_..." → "core_...")
+	leadingNum := regexp.MustCompile(`^\d+_`)
+	n = leadingNum.ReplaceAllString(n, "")
+	n = strings.Trim(n, "_")
 	if n == "" {
 		return "policy_checks"
 	}
@@ -578,20 +582,22 @@ func (s *svc) AssembleWorkflow(extracted *ExtractedData, samplePayload string) m
 	// 9. End nodes
 	endX := xCursor
 	nodes = append(nodes, map[string]interface{}{
-		"type":         "end",
-		"name":         "end_approved",
-		"endNodeName":  "approved",
-		"tag":          newID(),
-		"decisionNode": map[string]interface{}{},
-		"metadata":     map[string]interface{}{"x": endX, "y": yApproved, "nodeColor": 3},
+		"type":          "end",
+		"name":          "end_approved",
+		"endNodeName":   "approved",
+		"tag":           newID(),
+		"workflowState": map[string]interface{}{"type": "", "outcomeLogic": nil},
+		"decisionNode":  map[string]interface{}{},
+		"metadata":      map[string]interface{}{"x": endX, "y": yApproved, "nodeColor": 3},
 	})
 	nodes = append(nodes, map[string]interface{}{
-		"type":         "end",
-		"name":         "end_rejected",
-		"endNodeName":  "rejected",
-		"tag":          newID(),
-		"decisionNode": map[string]interface{}{},
-		"metadata":     map[string]interface{}{"x": endX, "y": yRejected, "nodeColor": 2},
+		"type":          "end",
+		"name":          "end_rejected",
+		"endNodeName":   "rejected",
+		"tag":           newID(),
+		"workflowState": map[string]interface{}{"type": "", "outcomeLogic": nil},
+		"decisionNode":  map[string]interface{}{},
+		"metadata":      map[string]interface{}{"x": endX, "y": yRejected, "nodeColor": 2},
 	})
 
 	// 10. Build inputs

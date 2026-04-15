@@ -117,6 +117,9 @@ class ClaudeClient:
         name = name.lower().strip()
         name = _re.sub(r'[^a-z0-9]+', '_', name)
         name = name.strip('_')
+        # Strip leading numeric prefix (e.g. "1_core_..." → "core_...")
+        name = _re.sub(r'^\d+_', '', name)
+        name = name.strip('_')
         return name or "policy_checks"
 
     # ─────────────────────────────────────────────────────────────────

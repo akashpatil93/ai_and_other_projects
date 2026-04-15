@@ -43,7 +43,7 @@ const bureauFields = `
 ### Bureau Score Variables
 | Policy Document Term                          | JSON Field                                          |
 |-----------------------------------------------|-----------------------------------------------------|
-| CIBIL Bureau Score / Bureau Score             | bureau.bureauscore                                  |
+| CIBIL Bureau Score / Bureau Score             | bureau.score                                  |
 | CIBIL Bureau Score (explicit)                 | bureau.bureau_score_cibil                           |
 | Experian Bureau Score                         | bureau.bureau_score_experian                        |
 | Equifax Bureau Score                          | bureau.bureau_score_equifax                         |
@@ -167,13 +167,10 @@ const inputFields = `
 `
 
 const modelFields = `
-## Derived Fields from the "model" modelSet node
-| Variable           | Expression name  | Description                            |
-|--------------------|------------------|----------------------------------------|
-| HIT / NO-HIT       | hit_no_hit       | true = bureau record found             |
-| Age at maturity    | age_at_maturity  | applicant age at loan end              |
-
-Reference syntax: model.hit_no_hit, model.age_at_maturity
+## Bureau HIT / NO-HIT
+When a bureau pull returns no record (NO-HIT), all bureau fields will be nil.
+Handle this using the standard nil-check pattern: bureau.<field> == nil
+Do NOT reference model.hit_no_hit — there is no "model" modelSet in this workflow.
 `
 
 const expressionRefRules = `
@@ -183,12 +180,11 @@ const expressionRefRules = `
 ### Rule 2 — Across different nodes: prefix with the SOURCE node name
   <source_node_name>.<expression_name>
   Examples:
-    model.hit_no_hit              → "hit_no_hit" computed in the "model" modelSet
     scorecard.bureau_score_woe    → expression in the "scorecard" modelSet
     go_no_go_checks.decision      → the "decision" outcome of the "go_no_go_checks" ruleSet
 
 ### Rule 3 — Node execution order matters
-  Start → bureau (dataSource) → scorecard → model → ruleSets → final_decision → eligibility → end
+  Start → bureau (dataSource) → scorecard → ruleSets → final_decision → eligibility → end
 `
 
 const expressionSyntax = `
@@ -495,7 +491,7 @@ MANDATORY:
 - NEVER leave approveCondition blank.
 - Add "|| field == nil" for bureau and bank numeric fields.
 - Use exact bureau variable names from the Bureau Fields table.
-- Reference HIT/NO-HIT as model.hit_no_hit.
+- Do NOT use model.hit_no_hit — there is no "model" modelSet. Use "|| bureau.field == nil" for NO-HIT.
 
 Return ONLY a valid JSON array:
 [{"name": "...", "approveCondition": "...", "cantDecideCondition": "", "muted": false}]

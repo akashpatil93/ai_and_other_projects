@@ -414,6 +414,7 @@ def assemble_workflow(extracted: Dict[str, Any], sample_payload: str = "") -> Di
         "name": END_APPROVED,
         "endNodeName": "approved",
         "tag": _uuid(),
+        "workflowState": {"type": "", "outcomeLogic": None},
         "decisionNode": {},
         "metadata": {"x": end_x, "y": Y_APPROVED, "nodeColor": 3},
     })
@@ -422,6 +423,7 @@ def assemble_workflow(extracted: Dict[str, Any], sample_payload: str = "") -> Di
         "name": END_REJECTED,
         "endNodeName": "rejected",
         "tag": _uuid(),
+        "workflowState": {"type": "", "outcomeLogic": None},
         "decisionNode": {},
         "metadata": {"x": end_x, "y": Y_REJECTED, "nodeColor": 2},
     })

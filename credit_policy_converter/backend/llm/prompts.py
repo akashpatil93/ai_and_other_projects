@@ -31,7 +31,7 @@ BUREAU_FIELDS = """
 ### Bureau Score Variables
 | Policy Document Term                          | JSON Field                                          |
 |-----------------------------------------------|-----------------------------------------------------|
-| CIBIL Bureau Score / Bureau Score             | bureau.bureauscore                                  |
+| CIBIL Bureau Score / Bureau Score             | bureau.score                                  |
 | CIBIL Bureau Score (explicit)                 | bureau.bureau_score_cibil                           |
 | Experian Bureau Score                         | bureau.bureau_score_experian                        |
 | Equifax Bureau Score                          | bureau.bureau_score_equifax                         |
@@ -220,17 +220,12 @@ INPUT_FIELDS = """
 """
 
 MODEL_FIELDS = """
-## Derived Fields from the "model" modelSet node
-These are computed by the "model" modelSet that runs before all rule checks.
-Reference them from other nodes as  model.<expression_name>
-
-| Variable           | Expression name  | Description                            |
-|--------------------|------------------|----------------------------------------|
-| HIT / NO-HIT       | hit_no_hit       | true = bureau record found             |
-| Age at maturity    | age_at_maturity  | applicant age at loan end              |
+## Bureau HIT / NO-HIT
+When a bureau pull returns no record (NO-HIT), all bureau fields will be nil.
+Handle this using the standard nil-check pattern: bureau.<field> == nil
+Do NOT reference model.hit_no_hit — there is no "model" modelSet in this workflow.
 
 Reference syntax from a ruleSet or another modelSet:
-  model.hit_no_hit          → boolean derived in the "model" modelSet
   scorecard.<feature_name>  → numeric output of a scorecard modelSet expression
 """
 
@@ -258,7 +253,6 @@ prefix with that node's name:
   <source_node_name>.<expression_name>
 
   Examples:
-    model.hit_no_hit              → "hit_no_hit" computed in the "model" modelSet
     scorecard.bureau_score_woe    → expression in the "scorecard" modelSet
     go_no_go_checks.decision      → the "decision" outcome of the "go_no_go_checks" ruleSet
     surrogate_policy_checks.decision → outcome of the surrogate ruleSet
@@ -267,13 +261,12 @@ prefix with that node's name:
 A node can only reference outputs of nodes that appear EARLIER in the workflow.
 The workflow order is:
   Start → bureau (dataSource) → bank (dataSource, if bank vars used)
-        → scorecard (optional modelSet) → model (optional modelSet)
+        → scorecard (optional modelSet)
         → [muted_<name> ruleSets] → [active ruleSets]
         → final_decision (branch) → eligibility (optional modelSet) → end
 
 So:
-  - "model" can reference bureau.*, bank.*, and input.* only
-  - ruleSet nodes can reference bureau.*, bank.*, input.*, model.*, scorecard.*
+  - ruleSet nodes can reference bureau.*, bank.*, input.*, scorecard.*
   - "eligibility" can reference all of the above plus ruleSet decisions
 
 ### Summary table
@@ -475,7 +468,7 @@ The engine evaluates approveCondition — must be TRUE to PASS.
 ## Quick-reference Examples
 | Policy Text                                        | Expression                                                              |
 |----------------------------------------------------|-------------------------------------------------------------------------|
-| Bureau Score >= 700 – Accept                       | bureau.bureauscore >= 700 && model.hit_no_hit == true                   |
+| Bureau Score >= 700 – Accept                       | bureau.score >= 700 || bureau.score == nil                  |
 | Max Overdue > 2000 – Reject                        | bureau.max_overdue <= 2000 \\|\\| bureau.max_overdue == nil              |
 | All applicants age >= 21                           | all(input.applicants, {#.age >= 21})                                    |
 | Any co-applicant is RBI defaulter – Reject         | none(input.applicants, {#.rbi_defaulter_flag == true})                  |
@@ -587,8 +580,6 @@ UPSTREAM NODES AVAILABLE (in execution order before this ruleSet):
   bureau.*          → all bureau pull fields (see Bureau Fields table)
   bank.*            → all bank statement fields (see Bank Fields table)
   input.*           → all application input fields (anything not in bureau or bank tables)
-  model.hit_no_hit  → true/false, computed in the "model" modelSet
-  model.age_at_maturity → number, computed in the "model" modelSet
   scorecard.<name>  → if a scorecard modelSet exists, its expression outputs
 
 SECTION CONTENT:
@@ -597,7 +588,7 @@ SECTION CONTENT:
 For each rule output:
 {{
   "name": "RULE_CODE: Short description",
-  "approveCondition": "expression — use bureau.*, bank.*, input.*, or model.<expr>",
+  "approveCondition": "expression — use bureau.*, bank.*, input.*, or scorecard.<expr>",
   "cantDecideCondition": "",
   "muted": false
 }}
@@ -607,8 +598,9 @@ MANDATORY:
 - NEVER leave approveCondition blank. If a variable is not in the bureau or bank tables,
   declare it as input.<variable_name> and write the rule using it.
 - Add "|| field == nil" for bureau and bank numeric fields (data may be absent).
+  This handles bureau NO-HIT (no bureau record found) — when bureau is a miss all fields are nil.
 - For negative-list input fields use: 'input.field == "negative" || input.field == nil'
-- Reference HIT/NO-HIT as model.hit_no_hit (NOT as a bureau field).
+- Do NOT use model.hit_no_hit — there is no "model" modelSet. Use nil checks instead.
 - Include the rule code (GPR01, PR01, etc.) in the name when present.
 
 Return ONLY a valid JSON array:
@@ -631,8 +623,6 @@ UPSTREAM NODES AVAILABLE (in execution order before this ruleSet):
   bureau.*                     → all bureau pull fields (see Bureau Fields table)
   bank.*                       → all bank statement fields (see Bank Fields table)
   input.*                      → all application input fields (anything not in bureau or bank)
-  model.hit_no_hit             → bool, from the "model" modelSet
-  model.age_at_maturity        → number, from the "model" modelSet
   scorecard.<name>             → scorecard expression outputs (if scorecard exists)
   go_no_go_checks.decision     → "pass" / "reject" outcome of the go_no_go ruleSet (if it exists)
 
@@ -692,8 +682,6 @@ UPSTREAM NODES AVAILABLE (in execution order before this ruleSet):
   bureau.*          → all bureau pull fields (use exact variable names from the Bureau Fields table)
   bank.*            → all bank statement fields (see Bank Fields table)
   input.*           → all application input fields (anything not in bureau or bank tables)
-  model.hit_no_hit  → true/false, computed in the "model" modelSet
-  model.age_at_maturity → number, computed in the "model" modelSet
   scorecard.<name>  → if a scorecard modelSet exists, its expression outputs
 
 SECTION CONTENT:
@@ -702,7 +690,7 @@ SECTION CONTENT:
 For each rule output:
 {{
   "name": "RULE_CODE: Short description",
-  "approveCondition": "expression — use bureau.*, bank.*, input.*, or model.<expr>",
+  "approveCondition": "expression — use bureau.*, bank.*, input.*, or scorecard.<expr>",
   "cantDecideCondition": "",
   "muted": false
 }}
@@ -712,9 +700,10 @@ MANDATORY:
 - NEVER leave approveCondition blank. If a variable is not in the bureau or bank tables,
   declare it as input.<variable_name> and write the rule using it.
 - Add "|| field == nil" for bureau and bank numeric fields (data may be absent).
+  This also handles bureau NO-HIT — when there is no bureau record all fields will be nil.
 - Use exact bureau variable names from the Bureau Fields table (e.g. bureau.max_dpd_inlast12months).
 - Use exact bank variable names from the Bank Fields table (e.g. bank.abb, bank.ach_bounce_count_3mo).
-- Reference HIT/NO-HIT as model.hit_no_hit (NOT as a bureau field).
+- Do NOT use model.hit_no_hit — there is no "model" modelSet. Use nil checks instead.
 - Include the rule code (e.g. GPR01, PR01, BR01) in the name when present.
 
 Return ONLY a valid JSON array:
@@ -849,7 +838,6 @@ UPSTREAM NODES AVAILABLE (all run before this modelSet):
   bureau.*          → raw bureau fields
   bank.*            → bank statement fields (ABB, salary, bounce, EMI, etc.)
   input.*           → application input fields (anything not in bureau or bank)
-  model.<expr>      → e.g. model.hit_no_hit, model.age_at_maturity
   scorecard.<feat>  → scorecard expression outputs (if scorecard exists)
 
 WITHIN THE SAME "{modelset_name}" modelSet:
@@ -888,7 +876,6 @@ UPSTREAM NODES AVAILABLE (all run before the eligibility modelSet):
   bureau.*                          → raw bureau fields
   bank.*                            → bank statement fields (ABB, salary, bounce, EMI, etc.)
   input.*                           → application input fields (anything not in bureau or bank)
-  model.<expr>                      → e.g. model.hit_no_hit, model.age_at_maturity
   scorecard.<feature>               → scorecard expression outputs (if scorecard exists)
   go_no_go_checks.decision          → "pass"/"reject" (if go_no_go ruleSet exists)
   surrogate_policy_checks.decision  → "pass"/"reject" (if surrogate ruleSet exists)
