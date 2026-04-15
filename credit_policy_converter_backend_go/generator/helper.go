@@ -847,6 +847,10 @@ func parsePDF(data []byte) ([]Section, error) {
 		return nil, fmt.Errorf("no text extracted from PDF")
 	}
 
+	// Normalize: insert newlines before section markers that may have been
+	// concatenated without line breaks by the PDF extraction library.
+	fullText = normalizePDFText(fullText)
+
 	// Strategy 1: "Rule set name:" lines
 	if secs := splitPDFByRulesetName(fullText); len(secs) > 0 {
 		return secs, nil
@@ -873,6 +877,19 @@ func parsePDF(data []byte) ([]Section, error) {
 	}}, nil
 }
 
+// normalizePDFText inserts newlines before section markers that may have been
+// concatenated without proper line breaks by the ledongthuc/pdf library.
+func normalizePDFText(text string) string {
+	// Insert \n before "Rule set name:" that doesn't already start on a new line
+	re1 := regexp.MustCompile(`([^\n])((?i)Rule\s{0,3}set\s{0,3}name\s{0,3}[:\-])`)
+	text = re1.ReplaceAllString(text, "$1\n$2")
+	// Insert \n before numbered headings (e.g. "1. Core Policy Checks") when they
+	// appear mid-text (preceded by a non-newline character and whitespace).
+	re2 := regexp.MustCompile(`([^\n\r])\s{1,4}(\d+\.\s+[A-Z][A-Za-z][A-Za-z ,&\-\/\(\)]{3,60})`)
+	text = re2.ReplaceAllString(text, "$1\n$2")
+	return text
+}
+
 func makePDFSection(name, text string) *Section {
 	text = strings.TrimSpace(text)
 	if len(text) < 20 {
@@ -894,7 +911,9 @@ func makePDFSection(name, text string) *Section {
 func splitPDFByRulesetName(fullText string) []Section {
 	// Match "Rule set name:" anywhere — don't require strict line-start since PDF text
 	// extraction may not produce proper newlines between all lines.
-	re := regexp.MustCompile(`(?i)Rule\s*set\s*name\s*[:\-]\s*([^\n]+)`)
+	// Cap section name at 120 chars to avoid consuming the entire document when
+	// no newline follows the name.
+	re := regexp.MustCompile(`(?i)Rule\s*set\s*name\s*[:\-]\s*([A-Za-z][^\n*]{0,120})`)
 	matches := re.FindAllStringSubmatchIndex(fullText, -1)
 	if len(matches) == 0 {
 		return nil
@@ -936,6 +955,14 @@ func splitPDFByRulesetName(fullText string) []Section {
 func splitPDFByNumberedHeadings(fullText string) []Section {
 	re := regexp.MustCompile(`(?m)(?:^|[\n\r])((?:\d+\.)+\d*\s+[A-Za-z].{3,60})(?:\n|$)`)
 	matches := re.FindAllStringSubmatchIndex(fullText, -1)
+
+	// Lenient fallback: if newline-anchored regex finds fewer than 2 headings,
+	// try without anchoring (handles PDFs where line breaks are missing).
+	if len(matches) < 2 {
+		re = regexp.MustCompile(`\b(\d+\.\s+[A-Z][A-Za-z][A-Za-z ,&\/\-\(\)]{3,50})\b`)
+		matches = re.FindAllStringSubmatchIndex(fullText, -1)
+	}
+
 	if len(matches) < 2 {
 		return nil
 	}
