@@ -331,18 +331,18 @@ def assemble_workflow(extracted: Dict[str, Any], sample_payload: str = "") -> Di
             {"name": "reject", "nextState": forward},
         ]
         if _has_cant_decide(rules):
-            conditions.append({"name": "cantDecide", "nextState": forward})
+            conditions.append({"name": "cant_decide", "nextState": forward})
         return _switch(sw_name, conditions)
 
     def _active_switch(sw_name: str, rules: List[Dict], next_node: Dict) -> Dict:
-        """Active ruleSets: all outcomes (pass/reject/cantDecide) continue to the next node.
+        """Active ruleSets: all outcomes (pass/reject/cant_decide) continue to the next node.
         The final_decision branch is the single point that aggregates all ruleset decisions."""
         conditions = [
             {"name": "pass",   "nextState": next_node},
             {"name": "reject", "nextState": next_node},
         ]
         if _has_cant_decide(rules):
-            conditions.append({"name": "cantDecide", "nextState": next_node})
+            conditions.append({"name": "cant_decide", "nextState": next_node})
         return _switch(sw_name, conditions)
 
     # ── 5–8. Chain all rulesets in order ─────────────────────────────

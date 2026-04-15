@@ -231,6 +231,13 @@ func (s *svc) ExtractAllSections(ctx context.Context, sections []Section, userCo
 	// NOTE: "exposure" removed — exposure sections contain rules and should be processed as modelset
 	skipTypes := map[string]bool{"metadata": true, "pre_read": true, "change_history": true}
 
+	// Detect single-section PDF fallback: the PDF parser couldn't split the document
+	// into multiple sections and returned the whole doc as one "Policy Document" section.
+	// In this case, run eligibility extraction in addition to go_no_go extraction on the
+	// same text so we don't silently drop offer/eligibility computations.
+	isSingleFallback := len(sections) == 1 &&
+		(sections[0].Name == "Policy Document" || sections[0].Name == "Document")
+
 	for _, sec := range sections {
 		stype, ok := sectionTypes[sec.Name]
 		if !ok {
@@ -273,6 +280,19 @@ func (s *svc) ExtractAllSections(ctx context.Context, sections []Section, userCo
 					namedRulesetOrder = append(namedRulesetOrder, rsKey)
 				}
 				namedRulesetMap[rsKey] = append(namedRulesetMap[rsKey], rules...)
+			}
+
+			// In single-section PDF fallback the whole document is one big section.
+			// Also run eligibility extraction so offer/computation content is not dropped.
+			if isSingleFallback && len(text) > 4000 {
+				eligRaw, eligErr := s.callClaude(ctx, inject(getEligibilityPrompt(text)), 16384, apiKey)
+				if eligErr == nil {
+					if eligParsed := extractJSON(eligRaw); eligParsed != nil {
+						if exprs, ok2 := toSliceOfMaps(eligParsed); ok2 && len(exprs) > 0 {
+							result.EligibilityExpressions = append(result.EligibilityExpressions, exprs...)
+						}
+					}
+				}
 			}
 
 		case stype == "modelset":
@@ -715,7 +735,7 @@ func buildMutedSwitch(swName string, rules []map[string]interface{}, forward map
 		map[string]interface{}{"name": "reject", "nextState": forward},
 	}
 	if hasCantDecide(rules) {
-		conds = append(conds, map[string]interface{}{"name": "cantDecide", "nextState": forward})
+		conds = append(conds, map[string]interface{}{"name": "cant_decide", "nextState": forward})
 	}
 	return map[string]interface{}{"type": "switch", "name": swName, "dataConditions": conds}
 }
@@ -726,7 +746,7 @@ func buildActiveSwitch(swName string, rules []map[string]interface{}, next map[s
 		map[string]interface{}{"name": "reject", "nextState": next},
 	}
 	if hasCantDecide(rules) {
-		conds = append(conds, map[string]interface{}{"name": "cantDecide", "nextState": next})
+		conds = append(conds, map[string]interface{}{"name": "cant_decide", "nextState": next})
 	}
 	return map[string]interface{}{"type": "switch", "name": swName, "dataConditions": conds}
 }

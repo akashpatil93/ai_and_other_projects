@@ -877,16 +877,16 @@ func parsePDF(data []byte) ([]Section, error) {
 	}}, nil
 }
 
-// normalizePDFText inserts newlines before section markers that may have been
-// concatenated without proper line breaks by the ledongthuc/pdf library.
+// normalizePDFText inserts newlines before "Rule set name:" markers that may have
+// been concatenated without line breaks by the ledongthuc/pdf library.
+// NOTE: We intentionally do NOT try to insert newlines before numbered headings
+// because rule bodies also contain numbered items (e.g. "1. Age must be…") and
+// the pattern is indistinguishable — inserting newlines there splits the document
+// into tiny fragments that are then filtered out by the minimum-length check.
 func normalizePDFText(text string) string {
 	// Insert \n before "Rule set name:" that doesn't already start on a new line
 	re1 := regexp.MustCompile(`([^\n])((?i)Rule\s{0,3}set\s{0,3}name\s{0,3}[:\-])`)
 	text = re1.ReplaceAllString(text, "$1\n$2")
-	// Insert \n before numbered headings (e.g. "1. Core Policy Checks") when they
-	// appear mid-text (preceded by a non-newline character and whitespace).
-	re2 := regexp.MustCompile(`([^\n\r])\s{1,4}(\d+\.\s+[A-Z][A-Za-z][A-Za-z ,&\-\/\(\)]{3,60})`)
-	text = re2.ReplaceAllString(text, "$1\n$2")
 	return text
 }
 
@@ -955,14 +955,6 @@ func splitPDFByRulesetName(fullText string) []Section {
 func splitPDFByNumberedHeadings(fullText string) []Section {
 	re := regexp.MustCompile(`(?m)(?:^|[\n\r])((?:\d+\.)+\d*\s+[A-Za-z].{3,60})(?:\n|$)`)
 	matches := re.FindAllStringSubmatchIndex(fullText, -1)
-
-	// Lenient fallback: if newline-anchored regex finds fewer than 2 headings,
-	// try without anchoring (handles PDFs where line breaks are missing).
-	if len(matches) < 2 {
-		re = regexp.MustCompile(`\b(\d+\.\s+[A-Z][A-Za-z][A-Za-z ,&\/\-\(\)]{3,50})\b`)
-		matches = re.FindAllStringSubmatchIndex(fullText, -1)
-	}
-
 	if len(matches) < 2 {
 		return nil
 	}
