@@ -395,22 +395,32 @@ Extract every Go/No-Go policy rule from the section below and produce a JSON arr
 
 MUTED RULES: Rules marked "Muted", "M", "Inactive", or "Not in force" get muted=true.
 
+UPSTREAM NODES AVAILABLE (in execution order before this ruleSet):
+  bureau.*          → all bureau pull fields (see Bureau Fields table)
+  bank.*            → all bank statement fields (see Bank Fields table)
+  input.*           → all application input fields (anything not in bureau or bank tables)
+  scorecard.<name>  → if a scorecard modelSet exists, its expression outputs
+
 SECTION CONTENT:
 %s
 
 For each rule output:
 {
   "name": "RULE_CODE: Short description",
-  "approveCondition": "expression — use bureau.*, bank.*, input.*, or model.<expr>",
+  "approveCondition": "expression — use bureau.*, bank.*, input.*, or scorecard.<expr>",
   "cantDecideCondition": "",
   "muted": false
 }
 
 MANDATORY:
 - INVERT every reject condition into an approve condition.
-- NEVER leave approveCondition blank.
-- Add "|| field == nil" for bureau and bank numeric fields.
+- NEVER leave approveCondition blank. If a variable is not in the bureau or bank tables,
+  declare it as input.<variable_name> and write the rule using it.
+- Add "|| field == nil" for bureau and bank numeric fields (data may be absent).
+  This also handles bureau NO-HIT — when there is no bureau record all fields will be nil.
 - For negative-list input fields use: 'input.field == "negative" || input.field == nil'
+- Do NOT use model.hit_no_hit — there is no "model" modelSet. Use nil checks instead.
+- Include the rule code (GPR01, PR01, etc.) in the name when present.
 
 Return ONLY a valid JSON array:
 [{"name": "...", "approveCondition": "...", "cantDecideCondition": "", "muted": false}]
@@ -424,6 +434,13 @@ func getSurrogatePolicyPrompt(sectionContent string) string {
 Extract every surrogate policy rule from the section below.
 Rules marked "Muted", "M", "Inactive", or "Not in force" get muted=true.
 
+UPSTREAM NODES AVAILABLE (in execution order before this ruleSet):
+  bureau.*                     → all bureau pull fields (see Bureau Fields table)
+  bank.*                       → all bank statement fields (see Bank Fields table)
+  input.*                      → all application input fields (anything not in bureau or bank)
+  scorecard.<name>             → scorecard expression outputs (if scorecard exists)
+  go_no_go_checks.decision     → "pass" / "reject" outcome of the go_no_go ruleSet (if it exists)
+
 SECTION CONTENT:
 %s
 
@@ -435,7 +452,13 @@ For each rule output:
   "muted": false
 }
 
-Apply the same inversion and nil-check rules as for Go/No-Go rules.
+MANDATORY:
+- INVERT every reject condition into an approve condition.
+- NEVER leave approveCondition blank. If a variable is not in the bureau or bank tables,
+  declare it as input.<variable_name> and write the rule using it.
+- Add "|| field == nil" for bureau and bank numeric fields.
+- Do NOT use model.hit_no_hit — there is no "model" modelSet. Use nil checks instead.
+
 Return ONLY a valid JSON array:
 [{"name": "...", "approveCondition": "...", "cantDecideCondition": "", "muted": false}]
 `, systemPrompt, sectionContent)
@@ -534,6 +557,18 @@ Extract eligibility computation formulas from the section below.
 These become entries in the "eligibility" modelSet node.
 
 %s
+
+UPSTREAM NODES AVAILABLE (all run before the eligibility modelSet):
+  bureau.*                          → raw bureau fields
+  bank.*                            → bank statement fields (ABB, salary, bounce, EMI, etc.)
+  input.*                           → application input fields (anything not in bureau or bank)
+  scorecard.<feature>               → scorecard expression outputs (if scorecard exists)
+  go_no_go_checks.decision          → "pass"/"reject" (if go_no_go ruleSet exists)
+  surrogate_policy_checks.decision  → "pass"/"reject" (if surrogate ruleSet exists)
+
+WITHIN THE SAME "eligibility" modelSet:
+  Reference earlier expressions by bare name (no prefix).
+  Example: if "max_emi" is defined at seqNo 0, a later expression at seqNo 1 can use just "max_emi".
 
 SECTION CONTENT:
 %s
