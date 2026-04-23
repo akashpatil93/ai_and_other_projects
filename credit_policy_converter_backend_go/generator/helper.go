@@ -680,6 +680,7 @@ func getEligibilityPrompt(sectionContent string) string {
 
 Extract eligibility computation formulas from the section below.
 These become entries in the "eligibility" modelSet node.
+Choose the correct type for each expression.
 
 %s
 
@@ -695,15 +696,24 @@ WITHIN THE SAME "eligibility" modelSet:
   Reference earlier expressions by bare name (no prefix).
   Example: if "max_emi" is defined at seqNo 0, a later expression at seqNo 1 can use just "max_emi".
 
+CRITICAL VARIABLE MAPPING — read before writing any expression:
+  "income" / "gross monthly income" / "declared income" / "monthly salary"
+      → input.<field_name>  (e.g. input.income, input.gross_monthly_income)
+      ✗ NOT bank.income_avg — that is bank-statement average credits, NOT declared income
+  "obligations" / "bureau obligations" / "outstanding amount" / "existing EMI on bureau"
+      → bureau.total_outstanding_amount
+      ✗ NOT bank.emi_debit_avg_3mo — that is bank-deducted EMI, NOT bureau outstanding balance
+  Use bank.* fields ONLY when the policy text explicitly says "from bank statement", "ABB", "bank-derived FOIR".
+
 SECTION CONTENT:
 %s
 
 Common eligibility variables: abb, foir, max_eligible_loan, emi, net_income.
 
 Rules:
-- Arithmetic / conditional formulas → type "expression"
-- Lookup tables (flat rows, one condition per row) → type "decisionTable"
-- 2D grids (one row-variable x one column-variable) → type "matrix"
+- Simple formulas → type "expression"  (use bare name for same-modelSet refs, node.name for cross-node)
+- Lookup tables with flat row/column conditions → type "decisionTable"
+- 2D grid (one row-variable x one column-variable) → type "matrix"
 
 Return ONLY a valid JSON array of expression objects. Every object must include:
 - name, type, condition (empty string for decisionTable/matrix)
