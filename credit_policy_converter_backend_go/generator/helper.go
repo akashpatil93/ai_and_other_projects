@@ -432,6 +432,10 @@ Complete example — 3 row conditions x 4 column conditions:
 
   matrix rules:
   - R = number of data row conditions; C = number of data col conditions.
+  - PLATFORM LIMITS — the BRE rejects matrices that exceed these:
+      Maximum data row conditions (R): 19
+      Maximum data column conditions (C): 15
+    If your grid needs more rows or columns, use decisionTable instead.
   - globalRowIndex = R  (= the index field on the "No matches" row).
   - globalColumnIndex = C  (= the index field on the "No matches" column).
   - The rows array has exactly one data-predictor entry (index 0, all conditions listed)
@@ -485,10 +489,15 @@ Valid types:
   "account_opening_checks"     – New account opening / account count rules
   "surrogate_policy"           – Surrogate/alternative policy rules
   "scorecard"                  – Scorecard model features, WOE coefficients, bureau feature bins
-  "modelset"                   – Computed/derived values: offer calculation, interest rate tables,
-                                 risk bucket grids, pricing matrices, income derivation, FOIR/EMI limits,
-                                 product-category cap tables, program selection tables, tenure/amount caps
+  "modelset"                   – Computed/derived values: offer calculation, offer decision tables,
+                                 interest rate tables, risk bucket grids, pricing matrices,
+                                 income derivation, FOIR/EMI limits, product offer tables,
+                                 warranty plan/cover tables, product-category cap tables,
+                                 program selection tables, tenure/amount caps
                                  — NOT binary pass/fail rules
+                                 Typical section names: "Offer Decision", "Warranty Engine",
+                                 "Product Offer NGN", "Product Offer USD", "Interest Rate Matrix",
+                                 "Credit Strategy Decision", "Rate Card", "Fee Table"
   "eligibility"                – Loan amount / EMI / FOIR computations
   "exposure"                   – Internal exposure or portfolio limit rules
   "common_rules"               – Shared rules used across programs
@@ -505,6 +514,10 @@ IMPORTANT:
   "Age checks", "Negative Databases", "PAN Check", "Bank Statement Checks") are "go_no_go".
 - Sections containing lookup tables, cap grids, product/program matrices, or computed value
   derivations are "modelset" — even if they reference pass/fail logic as part of the table.
+- Sections with names containing "offer", "warranty", "product offer", "rate card", "fee table",
+  "pricing", "credit strategy" are almost always "modelset".
+- "eligibility" is ONLY for sections that compute the loan amount or EMI a borrower qualifies for
+  (max eligible loan, FOIR-based cap). Offer pricing tables are "modelset", not "eligibility".
 - "Input Payload" or variable definition tables → "pre_read" (SKIP).
 
 Return ONLY valid JSON, no explanation:
@@ -655,6 +668,15 @@ These become entries in a modelSet node named "%s".
 
 %s
 
+UPSTREAM NODES AVAILABLE (all run before this modelSet):
+  bureau.*          → raw bureau fields
+  bank.*            → bank statement fields (ABB, salary, bounce, EMI, etc.)
+  input.*           → application input fields (anything not in bureau or bank)
+  scorecard.<feat>  → scorecard expression outputs (if scorecard exists)
+
+WITHIN THE SAME "%s" modelSet:
+  Reference earlier expressions by bare name (no node prefix).
+
 SECTION CONTENT:
 %s
 
@@ -671,7 +693,7 @@ Return ONLY a valid JSON array of expression objects. Every object must include:
   (globalRowIndex, globalColumnIndex, rows, columns, values).
 Do NOT return shells or placeholders — include all rows, columns, and cell values extracted
 from the section content.
-`, systemPrompt, modelsetName, modelsetExpressionTypes, sectionContent)
+`, systemPrompt, modelsetName, modelsetExpressionTypes, modelsetName, sectionContent)
 }
 
 func getEligibilityPrompt(sectionContent string) string {
@@ -735,13 +757,23 @@ Each feature becomes an expression in the "scorecard" modelSet node.
 
 %s
 
+UPSTREAM NODES AVAILABLE (all run before the scorecard modelSet):
+  bureau.*   → raw bureau fields (use these as decisionTable/matrix input variables)
+  bank.*     → bank statement fields
+  input.*    → application input fields (anything not in bureau or bank tables)
+
+WITHIN THE SAME "scorecard" modelSet:
+  Reference earlier expressions by bare name (no prefix).
+  Example: a "total_score" expression at seqNo N can sum earlier feature expressions
+  by bare name: feature_1 + feature_2 + feature_3
+
 SECTION CONTENT:
 %s
 
 Choose the correct type for each feature:
 - Single-variable WOE bins → type "decisionTable" (one header, one column condition per row)
 - Two-variable interaction grid → type "matrix"
-- Calculated score total → type "expression", use bare feature names
+- Calculated score total (sum of WOE features) → type "expression", use bare feature names
 
 Map all input variable names to the bureau.* namespace using the Bureau Fields table.
 Use "0" as the default for decisionTable WOE features.
@@ -1492,6 +1524,10 @@ func classifyByName(sections []Section) map[string]string {
 			"input payload", "1.1 "):
 			result[s.Name] = "pre_read"
 		case containsAny(nl, "exposure", "limit"):
+			result[s.Name] = "modelset"
+		case containsAny(nl, "offer decision", "offer calc", "offer table",
+			"warranty", "product offer", "rate card", "fee table",
+			"pricing", "credit strategy decision", "interest rate matrix"):
 			result[s.Name] = "modelset"
 		case containsAny(nl, "common", "shared"):
 			result[s.Name] = "common_rules"

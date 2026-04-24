@@ -540,8 +540,15 @@ Valid types:
   "account_opening_checks"     – New account opening / account count rules
   "surrogate_policy"           – Surrogate/alternative policy rules
   "scorecard"                  – Scorecard model features, WOE coefficients, bureau feature bins
-  "modelset"                   – Computed/derived values: offer calculation, interest rate tables, risk bucket grids,
-                                 pricing matrices, income derivation, FOIR/EMI limits — NOT binary pass/fail rules
+  "modelset"                   – Computed/derived values: offer calculation, offer decision tables,
+                                 interest rate tables, risk bucket grids, pricing matrices,
+                                 income derivation, FOIR/EMI limits, product offer tables,
+                                 warranty plan/cover tables, product-category cap tables,
+                                 program selection tables, tenure/amount caps
+                                 — NOT binary pass/fail rules
+                                 Typical section names: "Offer Decision", "Warranty Engine",
+                                 "Product Offer NGN", "Product Offer USD", "Interest Rate Matrix",
+                                 "Credit Strategy Decision", "Rate Card", "Fee Table"
   "eligibility"                – Loan amount / EMI / FOIR computations
   "exposure"                   – Internal exposure or portfolio limit rules
   "common_rules"               – Shared rules used across programs
@@ -556,6 +563,12 @@ IMPORTANT:
   more specific type, classify it as "go_no_go" — never as "metadata".
 - Sections named after specific checks (e.g. "Location Strategy", "Business Vintage",
   "Age checks", "Negative Databases", "PAN Check", "Bank Statement Checks") are "go_no_go".
+- Sections containing lookup tables, cap grids, product/program matrices, or computed value
+  derivations are "modelset" — even if they reference pass/fail logic as part of the table.
+- Sections with names containing "offer", "warranty", "product offer", "rate card", "fee table",
+  "pricing", "credit strategy" are almost always "modelset".
+- "eligibility" is ONLY for sections that compute the loan amount or EMI a borrower qualifies for
+  (max eligible loan, FOIR-based cap). Offer pricing tables are "modelset", not "eligibility".
 - "Input Payload" or variable definition tables → "pre_read" (SKIP).
 
 Return ONLY valid JSON, no explanation:
@@ -808,6 +821,10 @@ Complete example — 3 row conditions × 4 column conditions:
 
   matrix rules:
   - R = number of data row conditions; C = number of data col conditions.
+  - PLATFORM LIMITS — the BRE rejects matrices that exceed these:
+      Maximum data row conditions (R): 19
+      Maximum data column conditions (C): 15
+    If your grid needs more rows or columns, use decisionTable instead.
   - globalRowIndex = R  (= the index field on the "No matches" row).
   - globalColumnIndex = C  (= the index field on the "No matches" column).
   - The rows array has exactly one data-predictor entry (index 0, all conditions listed)

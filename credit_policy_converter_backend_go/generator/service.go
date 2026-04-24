@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/google/uuid"
 )
@@ -29,6 +29,7 @@ func newID() string {
 
 type svc struct {
 	anthropicURL string
+	httpClient   *http.Client
 }
 
 func (s *svc) ParseDocument(fileBytes []byte, filename string) ([]Section, error) {
@@ -71,35 +72,50 @@ type claudeResponse struct {
 }
 
 // callClaude sends a prompt to Claude and returns the text response.
+// useThinking=true enables extended thinking (better quality, slower).
 func (s *svc) callClaude(ctx context.Context, prompt string, maxTokens int, apiKey string) (string, error) {
+	return s.callClaudeOpts(ctx, prompt, maxTokens, apiKey, true)
+}
+
+func (s *svc) callClaudeNoThinking(ctx context.Context, prompt string, maxTokens int, apiKey string) (string, error) {
+	return s.callClaudeOpts(ctx, prompt, maxTokens, apiKey, false)
+}
+
+func (s *svc) callClaudeOpts(ctx context.Context, prompt string, maxTokens int, apiKey string, useThinking bool) (string, error) {
 	const model = "claude-opus-4-6"
 
-	httpClient := &http.Client{Timeout: 300 * time.Second}
-
-	// Attempt with extended thinking first
-	thinkingBudget := maxTokens * 4 / 10
-	if thinkingBudget < 1024 {
-		thinkingBudget = 1024
+	var reqBody claudeRequest
+	if useThinking {
+		thinkingBudget := maxTokens * 4 / 10
+		if thinkingBudget < 1024 {
+			thinkingBudget = 1024
+		}
+		reqBody = claudeRequest{
+			Model:     model,
+			MaxTokens: thinkingBudget + maxTokens,
+			Thinking:  &claudeThinking{Type: "enabled", BudgetTokens: thinkingBudget},
+			Messages:  []claudeMessage{{Role: "user", Content: prompt}},
+		}
+	} else {
+		reqBody = claudeRequest{
+			Model:     model,
+			MaxTokens: maxTokens,
+			Messages:  []claudeMessage{{Role: "user", Content: prompt}},
+		}
 	}
-	effectiveMax := thinkingBudget + maxTokens
 
-	reqBody := claudeRequest{
-		Model:     model,
-		MaxTokens: effectiveMax,
-		Thinking:  &claudeThinking{Type: "enabled", BudgetTokens: thinkingBudget},
-		Messages:  []claudeMessage{{Role: "user", Content: prompt}},
-	}
-
-	text, err := s.doClaudeRequest(ctx, httpClient, reqBody, apiKey)
-	if err != nil {
-		// Fallback: no extended thinking
+	text, err := s.doClaudeRequest(ctx, s.httpClient, reqBody, apiKey)
+	if err != nil && useThinking {
+		// Fallback: retry without extended thinking
 		reqBody.Thinking = nil
 		reqBody.MaxTokens = maxTokens
 		var err2 error
-		text, err2 = s.doClaudeRequest(ctx, httpClient, reqBody, apiKey)
+		text, err2 = s.doClaudeRequest(ctx, s.httpClient, reqBody, apiKey)
 		if err2 != nil {
 			return "", fmt.Errorf("claude API error: %w (thinking fallback: %v)", err, err2)
 		}
+	} else if err != nil {
+		return "", fmt.Errorf("claude API error: %w", err)
 	}
 	return text, nil
 }
@@ -195,7 +211,7 @@ func (s *svc) ExtractAllSections(ctx context.Context, sections []Section, userCo
 	}
 
 	var sectionTypes map[string]string
-	classifyResp, err := s.callClaude(ctx, getClassifySectionsPrompt(strings.Join(summaryLines, "\n")), 2048, apiKey)
+	classifyResp, err := s.callClaudeNoThinking(ctx, getClassifySectionsPrompt(strings.Join(summaryLines, "\n")), 2048, apiKey)
 	if err == nil {
 		parsed := extractJSON(classifyResp)
 		if m, ok := parsed.(map[string]interface{}); ok && len(m) > 0 {
@@ -227,7 +243,7 @@ func (s *svc) ExtractAllSections(ctx context.Context, sections []Section, userCo
 	}
 	log.Printf("[debug] section_types: %v", sectionTypes)
 
-	// Step 2: Process each section
+	// Step 2: Process each section concurrently
 	// NOTE: "exposure" removed — exposure sections contain rules and should be processed as modelset
 	skipTypes := map[string]bool{"metadata": true, "pre_read": true, "change_history": true}
 
@@ -238,13 +254,24 @@ func (s *svc) ExtractAllSections(ctx context.Context, sections []Section, userCo
 	isSingleFallback := len(sections) == 1 &&
 		(sections[0].Name == "Policy Document" || sections[0].Name == "Document")
 
-	for _, sec := range sections {
+	type sectionResult struct {
+		idx          int
+		rsKey        string
+		stype        string
+		rules        []map[string]interface{}
+		modelExprs   []map[string]interface{}
+		eligExprs    []map[string]interface{}
+		scorecardExprs []map[string]interface{}
+	}
+
+	resultsCh := make(chan sectionResult, len(sections))
+	var wg sync.WaitGroup
+
+	for idx, sec := range sections {
 		stype, ok := sectionTypes[sec.Name]
 		if !ok {
-			// Default to go_no_go (not metadata) so policy sections are never silently dropped
 			stype = "go_no_go"
 		}
-
 		text := sec.Text
 		if text == "" || skipTypes[stype] {
 			continue
@@ -252,85 +279,110 @@ func (s *svc) ExtractAllSections(ctx context.Context, sections []Section, userCo
 		if len(text) > 24000 {
 			text = text[:24000]
 		}
-
 		rsKey := sanitizeName(sec.Name)
 
-		var raw string
-		var callErr error
+		wg.Add(1)
+		go func(idx int, sec Section, stype, rsKey, text string) {
+			defer wg.Done()
+			res := sectionResult{idx: idx, rsKey: rsKey, stype: stype}
 
-		switch {
-		case bureauCategoryTypes[stype] || stype == "go_no_go" || stype == "surrogate_policy" || stype == "common_rules":
-			var prompt string
-			if bureauCategoryTypes[stype] {
-				prompt = getBureauRulesetPrompt(text, stype)
-			} else if stype == "surrogate_policy" {
-				prompt = getSurrogatePolicyPrompt(text)
-			} else {
-				prompt = getGoNoGoPrompt(text)
-			}
-
-			raw, callErr = s.callClaude(ctx, inject(prompt), 4096, apiKey)
-			if callErr != nil {
-				log.Printf("[warn] error processing section '%s': %v", sec.Name, callErr)
-				continue
-			}
-			parsed := extractJSON(raw)
-			if rules, ok := toSliceOfMaps(parsed); ok && len(rules) > 0 {
-				if _, exists := namedRulesetMap[rsKey]; !exists {
-					namedRulesetOrder = append(namedRulesetOrder, rsKey)
+			switch {
+			case bureauCategoryTypes[stype] || stype == "go_no_go" || stype == "surrogate_policy" || stype == "common_rules":
+				var prompt string
+				if bureauCategoryTypes[stype] {
+					prompt = getBureauRulesetPrompt(text, stype)
+				} else if stype == "surrogate_policy" {
+					prompt = getSurrogatePolicyPrompt(text)
+				} else {
+					prompt = getGoNoGoPrompt(text)
 				}
-				namedRulesetMap[rsKey] = append(namedRulesetMap[rsKey], rules...)
-			}
-
-			// In single-section PDF fallback the whole document is one big section.
-			// Also run eligibility extraction so offer/computation content is not dropped.
-			if isSingleFallback && len(text) > 4000 {
-				eligRaw, eligErr := s.callClaude(ctx, inject(getEligibilityPrompt(text)), 16384, apiKey)
-				if eligErr == nil {
-					if eligParsed := extractJSON(eligRaw); eligParsed != nil {
-						if exprs, ok2 := toSliceOfMaps(eligParsed); ok2 && len(exprs) > 0 {
-							result.EligibilityExpressions = append(result.EligibilityExpressions, exprs...)
+				raw, callErr := s.callClaude(ctx, inject(prompt), 4096, apiKey)
+				if callErr != nil {
+					log.Printf("[warn] error processing section '%s': %v", sec.Name, callErr)
+					break
+				}
+				if rules, ok := toSliceOfMaps(extractJSON(raw)); ok && len(rules) > 0 {
+					res.rules = rules
+				}
+				// Single-section fallback: also extract eligibility from the same text.
+				if isSingleFallback && len(text) > 4000 {
+					eligRaw, eligErr := s.callClaude(ctx, inject(getEligibilityPrompt(text)), 16384, apiKey)
+					if eligErr == nil {
+						if exprs, ok2 := toSliceOfMaps(extractJSON(eligRaw)); ok2 && len(exprs) > 0 {
+							res.eligExprs = exprs
 						}
 					}
 				}
-			}
 
-		case stype == "modelset":
-			raw, callErr = s.callClaude(ctx, inject(getModelsetPrompt(text, rsKey)), 16384, apiKey)
-			if callErr != nil {
-				log.Printf("[warn] error processing section '%s': %v", sec.Name, callErr)
-				continue
-			}
-			parsed := extractJSON(raw)
-			if exprs, ok := toSliceOfMaps(parsed); ok && len(exprs) > 0 {
-				if _, exists := namedModelsetMap[rsKey]; !exists {
-					namedModelsetOrder = append(namedModelsetOrder, rsKey)
+			case stype == "modelset":
+				raw, callErr := s.callClaude(ctx, inject(getModelsetPrompt(text, rsKey)), 16384, apiKey)
+				if callErr != nil {
+					log.Printf("[warn] error processing section '%s': %v", sec.Name, callErr)
+					break
 				}
-				namedModelsetMap[rsKey] = append(namedModelsetMap[rsKey], exprs...)
+				if exprs, ok := toSliceOfMaps(extractJSON(raw)); ok && len(exprs) > 0 {
+					res.modelExprs = exprs
+				}
+
+			case stype == "eligibility":
+				raw, callErr := s.callClaude(ctx, inject(getEligibilityPrompt(text)), 16384, apiKey)
+				if callErr != nil {
+					log.Printf("[warn] error processing section '%s': %v", sec.Name, callErr)
+					break
+				}
+				if exprs, ok := toSliceOfMaps(extractJSON(raw)); ok {
+					res.eligExprs = exprs
+				}
+
+			case stype == "scorecard":
+				raw, callErr := s.callClaude(ctx, inject(getScorecardPrompt(text)), 16384, apiKey)
+				if callErr != nil {
+					log.Printf("[warn] error processing section '%s': %v", sec.Name, callErr)
+					break
+				}
+				if exprs, ok := toSliceOfMaps(extractJSON(raw)); ok {
+					res.scorecardExprs = exprs
+				}
 			}
 
-		case stype == "eligibility":
-			raw, callErr = s.callClaude(ctx, inject(getEligibilityPrompt(text)), 16384, apiKey)
-			if callErr != nil {
-				log.Printf("[warn] error processing section '%s': %v", sec.Name, callErr)
-				continue
-			}
-			parsed := extractJSON(raw)
-			if exprs, ok := toSliceOfMaps(parsed); ok {
-				result.EligibilityExpressions = append(result.EligibilityExpressions, exprs...)
-			}
+			resultsCh <- res
+		}(idx, sec, stype, rsKey, text)
+	}
 
-		case stype == "scorecard":
-			raw, callErr = s.callClaude(ctx, inject(getScorecardPrompt(text)), 16384, apiKey)
-			if callErr != nil {
-				log.Printf("[warn] error processing section '%s': %v", sec.Name, callErr)
-				continue
-			}
-			parsed := extractJSON(raw)
-			if exprs, ok := toSliceOfMaps(parsed); ok {
-				result.ScorecardExpressions = append(result.ScorecardExpressions, exprs...)
-			}
+	wg.Wait()
+	close(resultsCh)
+
+	// Collect results preserving document section order
+	type indexedResult struct {
+		idx int
+		res sectionResult
+	}
+	collected := make([]indexedResult, 0, len(sections))
+	for res := range resultsCh {
+		collected = append(collected, indexedResult{res.idx, res})
+	}
+	// Sort by original section index to maintain order
+	for i := 1; i < len(collected); i++ {
+		for j := i; j > 0 && collected[j].idx < collected[j-1].idx; j-- {
+			collected[j], collected[j-1] = collected[j-1], collected[j]
 		}
+	}
+	for _, ir := range collected {
+		res := ir.res
+		if len(res.rules) > 0 {
+			if _, exists := namedRulesetMap[res.rsKey]; !exists {
+				namedRulesetOrder = append(namedRulesetOrder, res.rsKey)
+			}
+			namedRulesetMap[res.rsKey] = append(namedRulesetMap[res.rsKey], res.rules...)
+		}
+		if len(res.modelExprs) > 0 {
+			if _, exists := namedModelsetMap[res.rsKey]; !exists {
+				namedModelsetOrder = append(namedModelsetOrder, res.rsKey)
+			}
+			namedModelsetMap[res.rsKey] = append(namedModelsetMap[res.rsKey], res.modelExprs...)
+		}
+		result.EligibilityExpressions = append(result.EligibilityExpressions, res.eligExprs...)
+		result.ScorecardExpressions = append(result.ScorecardExpressions, res.scorecardExprs...)
 	}
 
 	// Build ordered named rulesets / modelsets (preserving document section order)
@@ -380,14 +432,15 @@ func sanitizeName(name string) string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const (
-	hGap       = 120
-	baseNarrow = 200
-	baseMedium = 300
-	baseRuleset = 300
-	ruleExtra  = 3
-	yMain      = 0
-	yApproved  = -320
-	yRejected  = 320
+	hGap          = 120
+	baseNarrow    = 200
+	baseMedium    = 300
+	baseRuleset   = 300
+	ruleExtra     = 3
+	yMain         = 0
+	yApproved     = -320
+	yRejected     = 320
+	modelSetLimit = 180
 )
 
 // AssembleWorkflow builds the complete BRE workflow JSON from extracted data.
@@ -423,6 +476,241 @@ func (s *svc) AssembleWorkflow(extracted *ExtractedData, samplePayload string) m
 	condText := collectConditions(extracted)
 	hasBankVars := regexp.MustCompile(`\bbank\.`).MatchString(condText)
 
+	// Build a set of input variable names so expression names that clash can be renamed.
+	inputVarSet := map[string]bool{}
+	for _, m := range regexp.MustCompile(`\binput\.([a-zA-Z_][a-zA-Z0-9_]*)\b`).FindAllStringSubmatch(condText, -1) {
+		inputVarSet[m[1]] = true
+	}
+	// dedupExprs removes duplicate expression names (keeps first) and renames any
+	// expression whose name matches an input variable name by appending "_calc".
+	// It also updates condition strings in the same batch so intra-modelSet
+	// references remain consistent after renaming.
+	dedupExprs := func(exprs []map[string]interface{}) []map[string]interface{} {
+		// Pass 1: build rename map for names that clash with input variables.
+		renameMap := map[string]string{}
+		for _, e := range exprs {
+			oldName := strVal(e, "name", "")
+			if inputVarSet[oldName] {
+				renameMap[oldName] = oldName + "_calc"
+			}
+		}
+
+		// Pass 2: apply renames to names and propagate into condition strings.
+		seen := map[string]bool{}
+		var out []map[string]interface{}
+		for _, e := range exprs {
+			name := strVal(e, "name", "")
+			if newName, ok := renameMap[name]; ok {
+				name = newName
+				e = copyMap(e)
+				e["name"] = name
+			}
+			// Update any references to renamed expressions inside condition text.
+			if len(renameMap) > 0 {
+				cond := strVal(e, "condition", "")
+				if cond != "" {
+					updated := cond
+					for oldName, newName := range renameMap {
+						re := regexp.MustCompile(`\b` + regexp.QuoteMeta(oldName) + `\b`)
+						updated = re.ReplaceAllString(updated, newName)
+					}
+					if updated != cond {
+						if e["name"] == name && cond == strVal(e, "condition", "") {
+							e = copyMap(e)
+						}
+						e["condition"] = updated
+					}
+				}
+			}
+			if name != "" && !seen[name] {
+				seen[name] = true
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	// fixModelSetRefs corrects stale bare-name references inside a modelSet's
+	// decision table headers, matrix headers, and expression conditions. When the
+	// LLM names an expression "foo_calc" but references it as "foo" in DT headers
+	// or sibling conditions, this pass aligns those references to the actual name.
+	fixModelSetRefs := func(exprs []map[string]interface{}) []map[string]interface{} {
+		nameSet := map[string]bool{}
+		for _, e := range exprs {
+			if n := strVal(e, "name", ""); n != "" {
+				nameSet[n] = true
+			}
+		}
+		aliasMap := map[string]string{}
+		for n := range nameSet {
+			if strings.HasSuffix(n, "_calc") {
+				bare := strings.TrimSuffix(n, "_calc")
+				if !nameSet[bare] {
+					aliasMap[bare] = n
+				}
+			}
+		}
+		if len(aliasMap) == 0 {
+			return exprs
+		}
+		applyAlias := func(s string) string {
+			if strings.Contains(s, ".") {
+				return s
+			}
+			if renamed, ok := aliasMap[s]; ok {
+				return renamed
+			}
+			return s
+		}
+		applyAliasCond := func(s string) string {
+			for old, newName := range aliasMap {
+				re := regexp.MustCompile(`\b` + regexp.QuoteMeta(old) + `\b`)
+				s = re.ReplaceAllString(s, newName)
+			}
+			return s
+		}
+		var out []map[string]interface{}
+		for _, e := range exprs {
+			switch strVal(e, "type", "expression") {
+			case "expression":
+				if cond := strVal(e, "condition", ""); cond != "" {
+					if u := applyAliasCond(cond); u != cond {
+						e = copyMap(e)
+						e["condition"] = u
+					}
+				}
+			case "decisionTable":
+				if dt, ok := e["decisionTableRules"].(map[string]interface{}); ok {
+					dtCopy := copyMap(dt)
+					dtChanged := false
+					if hs := toIfaceSlice(dt["headers"]); hs != nil {
+						newHs := make([]interface{}, len(hs))
+						for i, h := range hs {
+							if s, ok := h.(string); ok {
+								newHs[i] = applyAlias(s)
+								if newHs[i] != h {
+									dtChanged = true
+								}
+							} else {
+								newHs[i] = h
+							}
+						}
+						if dtChanged {
+							dtCopy["headers"] = newHs
+						}
+					}
+					if rows := toIfaceSlice(dt["rows"]); rows != nil {
+						newRows := make([]interface{}, len(rows))
+						rowsChanged := false
+						for ri, row := range rows {
+							rowMap, ok := row.(map[string]interface{})
+							if !ok {
+								newRows[ri] = row
+								continue
+							}
+							cols := toIfaceSlice(rowMap["columns"])
+							newCols := make([]interface{}, len(cols))
+							colsChanged := false
+							for ci, col := range cols {
+								colMap, ok := col.(map[string]interface{})
+								if !ok {
+									newCols[ci] = col
+									continue
+								}
+								colName := strVal(colMap, "name", "")
+								if newName := applyAlias(colName); newName != colName {
+									colCopy := copyMap(colMap)
+									colCopy["name"] = newName
+									newCols[ci] = colCopy
+									colsChanged = true
+								} else {
+									newCols[ci] = col
+								}
+							}
+							if colsChanged {
+								rowCopy := copyMap(rowMap)
+								rowCopy["columns"] = newCols
+								newRows[ri] = rowCopy
+								rowsChanged = true
+							} else {
+								newRows[ri] = row
+							}
+						}
+						if rowsChanged {
+							dtCopy["rows"] = newRows
+							dtChanged = true
+						}
+					}
+					if dtChanged {
+						e = copyMap(e)
+						e["decisionTableRules"] = dtCopy
+					}
+				}
+			case "matrix":
+				if mat, ok := e["matrix"].(map[string]interface{}); ok {
+					matCopy := copyMap(mat)
+					matChanged := false
+					if rows := toIfaceSlice(mat["rows"]); rows != nil {
+						newRows := make([]interface{}, len(rows))
+						rowsChanged := false
+						for ri, row := range rows {
+							rowMap, ok := row.(map[string]interface{})
+							if !ok {
+								newRows[ri] = row
+								continue
+							}
+							h := strVal(rowMap, "header", "")
+							if nh := applyAlias(h); nh != h {
+								rowCopy := copyMap(rowMap)
+								rowCopy["header"] = nh
+								newRows[ri] = rowCopy
+								rowsChanged = true
+							} else {
+								newRows[ri] = row
+							}
+						}
+						if rowsChanged {
+							matCopy["rows"] = newRows
+							matChanged = true
+						}
+					}
+					if cols := toIfaceSlice(mat["columns"]); cols != nil {
+						newCols := make([]interface{}, len(cols))
+						colsChanged := false
+						for ci, col := range cols {
+							colMap, ok := col.(map[string]interface{})
+							if !ok {
+								newCols[ci] = col
+								continue
+							}
+							h := strVal(colMap, "header", "")
+							if nh := applyAlias(h); nh != h {
+								colCopy := copyMap(colMap)
+								colCopy["header"] = nh
+								newCols[ci] = colCopy
+								colsChanged = true
+							} else {
+								newCols[ci] = col
+							}
+						}
+						if colsChanged {
+							matCopy["columns"] = newCols
+							matChanged = true
+						}
+					}
+					if matChanged {
+						e = copyMap(e)
+						e["matrix"] = matCopy
+					}
+				}
+			}
+			out = append(out, e)
+		}
+		return out
+	}
+
+	eligExprs = fixModelSetRefs(dedupExprs(eligExprs))
+	scorecardExprs = fixModelSetRefs(dedupExprs(scorecardExprs))
+
 	var modelExprs []map[string]interface{}
 	if strings.Contains(condText, "model.hit_no_hit") {
 		modelExprs = append(modelExprs, map[string]interface{}{
@@ -449,7 +737,11 @@ func (s *svc) AssembleWorkflow(extracted *ExtractedData, samplePayload string) m
 		if len(allRulesets) > 0 {
 			return map[string]interface{}{"name": allRulesets[0]["name"], "type": "ruleSet"}
 		}
-		return map[string]interface{}{"name": "final_decision", "type": "branch"}
+		// No rulesets: skip final_decision, route directly to eligibility or end_approved.
+		if len(eligExprs) > 0 {
+			return map[string]interface{}{"name": "eligibility", "type": "modelSet"}
+		}
+		return map[string]interface{}{"name": "end_approved", "type": "end"}
 	}
 
 	firstNamedModelsetOrRuleset := func() map[string]interface{} {
@@ -477,6 +769,38 @@ func (s *svc) AssembleWorkflow(extracted *ExtractedData, samplePayload string) m
 	}()
 
 	var nodes []interface{}
+
+	// appendModelSet builds one or more modelSet nodes for the given expressions,
+	// splitting into chunks of modelSetLimit. Chunks are named baseName, baseName_2, …
+	// The last chunk's nextState is finalNext; each preceding chunk points to the next.
+	appendModelSet := func(baseName string, exprs []map[string]interface{}, finalNext map[string]interface{}) {
+		if len(exprs) == 0 {
+			return
+		}
+		var chunkNames []string
+		var chunkExprs [][]map[string]interface{}
+		for i := 0; i < len(exprs); i += modelSetLimit {
+			end := i + modelSetLimit
+			if end > len(exprs) {
+				end = len(exprs)
+			}
+			name := baseName
+			if i > 0 {
+				name = fmt.Sprintf("%s_%d", baseName, i/modelSetLimit+1)
+			}
+			chunkNames = append(chunkNames, name)
+			chunkExprs = append(chunkExprs, exprs[i:end])
+		}
+		for ci := range chunkNames {
+			var next map[string]interface{}
+			if ci+1 < len(chunkNames) {
+				next = map[string]interface{}{"name": chunkNames[ci+1], "type": "modelSet"}
+			} else {
+				next = finalNext
+			}
+			nodes = append(nodes, buildModelSet(chunkNames[ci], place(baseMedium), yMain, chunkExprs[ci], next))
+		}
+	}
 
 	// 1. Start node
 	datasourceName := "Source_Node"
@@ -506,14 +830,10 @@ func (s *svc) AssembleWorkflow(extracted *ExtractedData, samplePayload string) m
 	})
 
 	// 3. Scorecard modelSet
-	if len(scorecardExprs) > 0 {
-		nodes = append(nodes, buildModelSet("scorecard", place(baseMedium), yMain, scorecardExprs, afterScorecard))
-	}
+	appendModelSet("scorecard", scorecardExprs, afterScorecard)
 
 	// 4. Model modelSet
-	if len(modelExprs) > 0 {
-		nodes = append(nodes, buildModelSet("model", place(baseMedium), yMain, modelExprs, firstNamedModelsetOrRuleset()))
-	}
+	appendModelSet("model", modelExprs, firstNamedModelsetOrRuleset())
 
 	// 5. Named modelsets (between model and first ruleset)
 	for i, ms := range namedModelsets {
@@ -523,9 +843,8 @@ func (s *svc) AssembleWorkflow(extracted *ExtractedData, samplePayload string) m
 		} else {
 			msNext = firstRulesetRef()
 		}
-		exprs := make([]map[string]interface{}, len(ms.Expressions))
-		copy(exprs, ms.Expressions)
-		nodes = append(nodes, buildModelSet(ms.Name, place(baseMedium), yMain, exprs, msNext))
+		exprs := fixModelSetRefs(dedupExprs(ms.Expressions))
+		appendModelSet(ms.Name, exprs, msNext)
 	}
 
 	// 6. Rulesets in order
@@ -550,54 +869,53 @@ func (s *svc) AssembleWorkflow(extracted *ExtractedData, samplePayload string) m
 		}
 	}
 
-	// 7. Final decision branch
-	fdSw := "final_decision-switch"
-	var approveParts []string
-	for _, rs := range allRulesets {
-		if hasActiveRules(toMapSlice(rs["rules"])) {
-			approveParts = append(approveParts, fmt.Sprintf(`%s.decision == "pass"`, rs["name"]))
+	// 7. Final decision branch — only generated when rulesets exist to aggregate.
+	// When there are no rulesets the last modelSet routes directly to eligibility
+	// or end_approved via firstRulesetRef, so no branch is needed.
+	if len(allRulesets) > 0 {
+		fdSw := "final_decision-switch"
+		var approveParts []string
+		for _, rs := range allRulesets {
+			if hasActiveRules(toMapSlice(rs["rules"])) {
+				approveParts = append(approveParts, fmt.Sprintf(`%s.decision == "pass"`, rs["name"]))
+			}
 		}
-	}
-	approveCond := "true"
-	if len(approveParts) > 0 {
-		approveCond = strings.Join(approveParts, " and ")
-	}
+		approveCond := "true"
+		if len(approveParts) > 0 {
+			approveCond = strings.Join(approveParts, " and ")
+		}
 
-	nodes = append(nodes, map[string]interface{}{
-		"type": "branch",
-		"name": "final_decision",
-		"tag":  newID(),
-		"expressions": []interface{}{
-			map[string]interface{}{"name": "approve", "id": newID(), "seqNo": 0, "condition": approveCond, "tag": newID()},
-			map[string]interface{}{"name": "reject", "id": newID(), "seqNo": 1, "condition": "true", "tag": newID()},
-		},
-		"metadata":  map[string]interface{}{"x": place(baseMedium), "y": yMain, "nodeColor": 1},
-		"nextState": map[string]interface{}{"type": "switch", "name": fdSw},
-	})
+		nodes = append(nodes, map[string]interface{}{
+			"type": "branch",
+			"name": "final_decision",
+			"tag":  newID(),
+			"expressions": []interface{}{
+				map[string]interface{}{"name": "approve", "id": newID(), "seqNo": 0, "condition": approveCond, "tag": newID()},
+				map[string]interface{}{"name": "reject", "id": newID(), "seqNo": 1, "condition": "true", "tag": newID()},
+			},
+			"metadata":  map[string]interface{}{"x": place(baseMedium), "y": yMain, "nodeColor": 1},
+			"nextState": map[string]interface{}{"type": "switch", "name": fdSw},
+		})
 
-	var approvePath map[string]interface{}
-	if len(eligExprs) > 0 {
-		approvePath = map[string]interface{}{"name": "eligibility", "type": "modelSet"}
-	} else {
-		approvePath = map[string]interface{}{"name": "end_approved", "type": "end"}
+		var approvePath map[string]interface{}
+		if len(eligExprs) > 0 {
+			approvePath = map[string]interface{}{"name": "eligibility", "type": "modelSet"}
+		} else {
+			approvePath = map[string]interface{}{"name": "end_approved", "type": "end"}
+		}
+
+		nodes = append(nodes, map[string]interface{}{
+			"type": "switch",
+			"name": fdSw,
+			"dataConditions": []interface{}{
+				map[string]interface{}{"name": "approve", "nextState": approvePath},
+				map[string]interface{}{"name": "reject", "nextState": map[string]interface{}{"name": "end_rejected", "type": "end"}},
+			},
+		})
 	}
-
-	nodes = append(nodes, map[string]interface{}{
-		"type": "switch",
-		"name": fdSw,
-		"dataConditions": []interface{}{
-			map[string]interface{}{"name": "approve", "nextState": approvePath},
-			map[string]interface{}{"name": "reject", "nextState": map[string]interface{}{"name": "end_rejected", "type": "end"}},
-		},
-	})
 
 	// 8. Eligibility modelSet
-	if len(eligExprs) > 0 {
-		nodes = append(nodes, buildModelSet(
-			"eligibility", place(baseMedium), yMain, eligExprs,
-			map[string]interface{}{"name": "end_approved", "type": "end"},
-		))
-	}
+	appendModelSet("eligibility", eligExprs, map[string]interface{}{"name": "end_approved", "type": "end"})
 
 	// 9. End nodes
 	endX := xCursor
@@ -610,15 +928,20 @@ func (s *svc) AssembleWorkflow(extracted *ExtractedData, samplePayload string) m
 		"decisionNode":  map[string]interface{}{},
 		"metadata":      map[string]interface{}{"x": endX, "y": yApproved, "nodeColor": 3},
 	})
-	nodes = append(nodes, map[string]interface{}{
-		"type":          "end",
-		"name":          "end_rejected",
-		"endNodeName":   "rejected",
-		"tag":           newID(),
-		"workflowState": map[string]interface{}{"type": "", "outcomeLogic": nil},
-		"decisionNode":  map[string]interface{}{},
-		"metadata":      map[string]interface{}{"x": endX, "y": yRejected, "nodeColor": 2},
-	})
+	if len(allRulesets) > 0 {
+		nodes = append(nodes, map[string]interface{}{
+			"type":          "end",
+			"name":          "end_rejected",
+			"endNodeName":   "rejected",
+			"tag":           newID(),
+			"workflowState": map[string]interface{}{"type": "", "outcomeLogic": nil},
+			"decisionNode":  map[string]interface{}{},
+			"metadata":      map[string]interface{}{"x": endX, "y": yRejected, "nodeColor": 2},
+		})
+	}
+
+	// Post-process: add placeholder expressions for any undefined cross-node refs
+	nodes = fixUndefinedModelRefs(nodes)
 
 	// 10. Build inputs
 	inputs := BuildInputs(nodes, samplePayload)
@@ -688,6 +1011,7 @@ func buildModelSet(name string, x, y int, expressions []map[string]interface{}, 
 
 		switch etype {
 		case "matrix":
+			expr = enforceMatrixLimits(expr)
 			m := expr["matrix"]
 			if m == nil {
 				m = copyMap(emptyMatrix)
@@ -826,6 +1150,325 @@ func toMapSlice(v interface{}) []map[string]interface{} {
 		}
 	}
 	return result
+}
+
+const (
+	matrixMaxRows = 19
+	matrixMaxCols = 15
+)
+
+// enforceMatrixLimits truncates a matrix expression to the BRE platform limits
+// (max 19 data row conditions, max 15 data column conditions).
+// Conditions beyond the limit are dropped; the values grid is trimmed accordingly.
+func enforceMatrixLimits(expr map[string]interface{}) map[string]interface{} {
+	matrixRaw, ok := expr["matrix"]
+	if !ok {
+		return expr
+	}
+	matrix, ok := matrixRaw.(map[string]interface{})
+	if !ok {
+		return expr
+	}
+
+	rowsArr, _ := matrix["rows"].([]interface{})
+	colsArr, _ := matrix["columns"].([]interface{})
+	valuesArr, _ := matrix["values"].([]interface{})
+
+	// Locate data row / no-matches row
+	dataRowIdx, noMatchRowIdx := -1, -1
+	for i, r := range rowsArr {
+		rm, ok := r.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if nm, _ := rm["isNoMatches"].(bool); nm {
+			noMatchRowIdx = i
+		} else if dataRowIdx < 0 {
+			dataRowIdx = i
+		}
+	}
+	dataColIdx, noMatchColIdx := -1, -1
+	for i, c := range colsArr {
+		cm, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if nm, _ := cm["isNoMatches"].(bool); nm {
+			noMatchColIdx = i
+		} else if dataColIdx < 0 {
+			dataColIdx = i
+		}
+	}
+	if dataRowIdx < 0 || dataColIdx < 0 {
+		return expr
+	}
+
+	dataRow := rowsArr[dataRowIdx].(map[string]interface{})
+	dataCol := colsArr[dataColIdx].(map[string]interface{})
+	rowConds, _ := dataRow["conditions"].([]interface{})
+	colConds, _ := dataCol["conditions"].([]interface{})
+
+	R, C := len(rowConds), len(colConds)
+	if R <= matrixMaxRows && C <= matrixMaxCols {
+		return expr
+	}
+	newR, newC := R, C
+	if newR > matrixMaxRows {
+		newR = matrixMaxRows
+	}
+	if newC > matrixMaxCols {
+		newC = matrixMaxCols
+	}
+
+	reindexConds := func(conds []interface{}, n int) []interface{} {
+		out := make([]interface{}, n)
+		for i := 0; i < n; i++ {
+			if m, ok := conds[i].(map[string]interface{}); ok {
+				nc := copyMap(m)
+				nc["index"] = i
+				out[i] = nc
+			} else {
+				out[i] = conds[i]
+			}
+		}
+		return out
+	}
+
+	fixNoMatchConds := func(conds []interface{}, idx int) []interface{} {
+		out := make([]interface{}, len(conds))
+		for i, c := range conds {
+			if cm, ok := c.(map[string]interface{}); ok {
+				nc := copyMap(cm)
+				nc["index"] = idx
+				out[i] = nc
+			} else {
+				out[i] = c
+			}
+		}
+		return out
+	}
+
+	// Rebuild rows
+	newRowsArr := make([]interface{}, 0, len(rowsArr))
+	for i, r := range rowsArr {
+		rm, ok := r.(map[string]interface{})
+		if !ok {
+			newRowsArr = append(newRowsArr, r)
+			continue
+		}
+		switch i {
+		case dataRowIdx:
+			nr := copyMap(rm)
+			nr["conditions"] = reindexConds(rowConds, newR)
+			newRowsArr = append(newRowsArr, nr)
+		case noMatchRowIdx:
+			nr := copyMap(rm)
+			nr["index"] = newR
+			if nmConds, ok := rm["conditions"].([]interface{}); ok {
+				nr["conditions"] = fixNoMatchConds(nmConds, newR)
+			}
+			newRowsArr = append(newRowsArr, nr)
+		default:
+			newRowsArr = append(newRowsArr, r)
+		}
+	}
+
+	// Rebuild columns
+	newColsArr := make([]interface{}, 0, len(colsArr))
+	for i, c := range colsArr {
+		cm, ok := c.(map[string]interface{})
+		if !ok {
+			newColsArr = append(newColsArr, c)
+			continue
+		}
+		switch i {
+		case dataColIdx:
+			nc := copyMap(cm)
+			nc["conditions"] = reindexConds(colConds, newC)
+			newColsArr = append(newColsArr, nc)
+		case noMatchColIdx:
+			nc := copyMap(cm)
+			nc["index"] = newC
+			if nmConds, ok := cm["conditions"].([]interface{}); ok {
+				nc["conditions"] = fixNoMatchConds(nmConds, newC)
+			}
+			newColsArr = append(newColsArr, nc)
+		default:
+			newColsArr = append(newColsArr, c)
+		}
+	}
+
+	// Rebuild values grid: keep [0..newR-1][0..newC-1] data cells;
+	// last row = original no-matches row (last row of valuesArr);
+	// last col per row = original no-matches col (last element of each row).
+	origR := len(valuesArr)
+	newValues := make([]interface{}, newR+1)
+	for i := 0; i <= newR; i++ {
+		var srcRow []interface{}
+		if i == newR {
+			// No-matches row: use original last row
+			if origR > 0 {
+				srcRow, _ = valuesArr[origR-1].([]interface{})
+			}
+		} else if i < origR {
+			srcRow, _ = valuesArr[i].([]interface{})
+		} else if origR > 0 {
+			srcRow, _ = valuesArr[origR-1].([]interface{})
+		}
+
+		origC := len(srcRow)
+		newRow := make([]interface{}, newC+1)
+		for j := 0; j <= newC; j++ {
+			if j == newC {
+				// No-matches col: original last element
+				if origC > 0 {
+					newRow[j] = srcRow[origC-1]
+				} else {
+					newRow[j] = ""
+				}
+			} else if j < origC {
+				newRow[j] = srcRow[j]
+			} else if origC > 0 {
+				newRow[j] = srcRow[origC-1]
+			} else {
+				newRow[j] = ""
+			}
+		}
+		newValues[i] = newRow
+	}
+
+	newMatrix := copyMap(matrix)
+	newMatrix["rows"] = newRowsArr
+	newMatrix["columns"] = newColsArr
+	newMatrix["values"] = newValues
+	newMatrix["globalRowIndex"] = newR
+	newMatrix["globalColumnIndex"] = newC
+
+	newExpr := copyMap(expr)
+	newExpr["matrix"] = newMatrix
+	return newExpr
+}
+
+// fixUndefinedModelRefs scans all condition strings across nodes for <modelset>.<expr>
+// cross-node references. If the modelset exists but lacks the referenced expression,
+// a placeholder expression (condition "0") is added to the modelset so the workflow
+// compiles. If the modelset does not exist at all, the reference is left as-is
+// (the workflow validator will flag it).
+func fixUndefinedModelRefs(nodes []interface{}) []interface{} {
+	type msInfo struct {
+		nodeIdx int
+		exprs   map[string]bool
+	}
+	msMap := make(map[string]*msInfo)
+	for idx, n := range nodes {
+		node, ok := n.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if node["type"] != "modelSet" {
+			continue
+		}
+		name, _ := node["name"].(string)
+		info := &msInfo{nodeIdx: idx, exprs: make(map[string]bool)}
+		exprs, _ := node["expressions"].([]interface{})
+		for _, e := range exprs {
+			if em, ok := e.(map[string]interface{}); ok {
+				if en, ok := em["name"].(string); ok && en != "" {
+					info.exprs[en] = true
+				}
+			}
+		}
+		msMap[name] = info
+	}
+	if len(msMap) == 0 {
+		return nodes
+	}
+
+	// Collect all condition-like strings from nodes
+	skipPfx := map[string]bool{"bureau": true, "bank": true, "input": true}
+	var sb strings.Builder
+	for _, n := range nodes {
+		node, ok := n.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, e := range toIfaceSlice(node["expressions"]) {
+			em, ok := e.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			sb.WriteString(strVal(em, "condition", "") + " ")
+			if dt, ok := em["decisionTableRules"].(map[string]interface{}); ok {
+				for _, h := range toIfaceSlice(dt["headers"]) {
+					if hs, ok := h.(string); ok {
+						sb.WriteString(hs + " ")
+					}
+				}
+			}
+		}
+		for _, r := range toIfaceSlice(node["rules"]) {
+			if rm, ok := r.(map[string]interface{}); ok {
+				sb.WriteString(strVal(rm, "approveCondition", "") + " ")
+				sb.WriteString(strVal(rm, "cantDecideCondition", "") + " ")
+			}
+		}
+	}
+
+	condRe := regexp.MustCompile(`\b([a-z][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b`)
+	seenMissing := make(map[string]map[string]bool)
+	var missingOrder []struct{ ms, expr string }
+
+	for _, m := range condRe.FindAllStringSubmatch(sb.String(), -1) {
+		ns, field := m[1], m[2]
+		if skipPfx[ns] {
+			continue
+		}
+		info, exists := msMap[ns]
+		if !exists {
+			continue
+		}
+		if info.exprs[field] {
+			continue
+		}
+		if seenMissing[ns] == nil {
+			seenMissing[ns] = make(map[string]bool)
+		}
+		if !seenMissing[ns][field] {
+			seenMissing[ns][field] = true
+			missingOrder = append(missingOrder, struct{ ms, expr string }{ns, field})
+		}
+	}
+
+	for _, pair := range missingOrder {
+		info := msMap[pair.ms]
+		node := nodes[info.nodeIdx].(map[string]interface{})
+		exprs, _ := node["expressions"].([]interface{})
+		log.Printf("[info] adding missing expression '%s' to modelset '%s'", pair.expr, pair.ms)
+		exprs = append(exprs, map[string]interface{}{
+			"name":               pair.expr,
+			"id":                 newID(),
+			"seqNo":              len(exprs),
+			"condition":          "0",
+			"type":               "expression",
+			"decisionTableRules": copyMap(emptyDT),
+			"matrix":             copyMap(emptyMatrix),
+			"tag":                newID(),
+		})
+		info.exprs[pair.expr] = true
+		node["expressions"] = exprs
+		nodes[info.nodeIdx] = node
+	}
+
+	return nodes
+}
+
+// toIfaceSlice casts interface{} to []interface{}, returning nil on failure.
+func toIfaceSlice(v interface{}) []interface{} {
+	if v == nil {
+		return nil
+	}
+	s, _ := v.([]interface{})
+	return s
 }
 
 // quoteDTOutputs wraps text output strings in the decisionTableRules with quotes.

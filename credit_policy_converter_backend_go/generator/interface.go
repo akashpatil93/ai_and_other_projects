@@ -1,6 +1,10 @@
 package generator
 
-import "context"
+import (
+	"context"
+	"net/http"
+	"time"
+)
 
 // Section represents a parsed document section.
 type Section struct {
@@ -61,5 +65,8 @@ func GetService(anthropicURL string) Service {
 	if anthropicURL == "" {
 		anthropicURL = "https://api.anthropic.com/v1"
 	}
-	return &svc{anthropicURL: anthropicURL}
+	return &svc{
+		anthropicURL: anthropicURL,
+		httpClient:   &http.Client{Timeout: 300 * time.Second},
+	}
 }

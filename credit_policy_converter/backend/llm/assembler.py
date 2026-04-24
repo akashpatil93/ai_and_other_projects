@@ -14,6 +14,8 @@ from typing import Any, Dict, List
 END_APPROVED = "end_approved"
 END_REJECTED = "end_rejected"
 
+_MODELSET_LIMIT = 180
+
 
 def _uuid() -> str:
     return str(uuid.uuid4())
@@ -102,12 +104,160 @@ def _quote_dt_outputs(dt_rules: Dict) -> Dict:
     return rules
 
 
+_MATRIX_MAX_ROWS = 19
+_MATRIX_MAX_COLS = 15
+
+
+def _enforce_matrix_limits(expr: Dict) -> Dict:
+    """Truncate a matrix expression to the BRE platform limits (19 rows, 15 cols)."""
+    matrix = expr.get("matrix")
+    if not matrix or not isinstance(matrix, dict):
+        return expr
+
+    rows = matrix.get("rows") or []
+    cols = matrix.get("columns") or []
+    values = matrix.get("values") or []
+
+    data_row = next((r for r in rows if not r.get("isNoMatches")), None)
+    no_match_row = next((r for r in rows if r.get("isNoMatches")), None)
+    data_col = next((c for c in cols if not c.get("isNoMatches")), None)
+    no_match_col = next((c for c in cols if c.get("isNoMatches")), None)
+
+    if not data_row or not data_col:
+        return expr
+
+    row_conds = data_row.get("conditions") or []
+    col_conds = data_col.get("conditions") or []
+    R, C = len(row_conds), len(col_conds)
+
+    if R <= _MATRIX_MAX_ROWS and C <= _MATRIX_MAX_COLS:
+        return expr
+
+    new_R = min(R, _MATRIX_MAX_ROWS)
+    new_C = min(C, _MATRIX_MAX_COLS)
+
+    def reindex(conds: list, count: int) -> list:
+        return [{**c, "index": i} for i, c in enumerate(conds[:count])]
+
+    def fix_no_match_conds(conds: list, idx: int) -> list:
+        return [{**c, "index": idx} for c in (conds or [])]
+
+    new_rows = []
+    for r in rows:
+        if r.get("isNoMatches"):
+            new_rows.append({**r, "index": new_R, "conditions": fix_no_match_conds(r.get("conditions"), new_R)})
+        else:
+            new_rows.append({**r, "conditions": reindex(row_conds, new_R)})
+
+    new_cols = []
+    for c in cols:
+        if c.get("isNoMatches"):
+            new_cols.append({**c, "index": new_C, "conditions": fix_no_match_conds(c.get("conditions"), new_C)})
+        else:
+            new_cols.append({**c, "conditions": reindex(col_conds, new_C)})
+
+    # Rebuild values grid: last row = original no-matches row; last col = original no-matches col.
+    orig_R = len(values)
+    new_values = []
+    for i in range(new_R + 1):
+        if i == new_R:
+            src_row = values[-1] if values else []
+        elif i < orig_R:
+            src_row = values[i]
+        elif values:
+            src_row = values[-1]
+        else:
+            src_row = []
+
+        orig_C = len(src_row)
+        new_row = []
+        for j in range(new_C + 1):
+            if j == new_C:
+                new_row.append(src_row[-1] if src_row else "")
+            elif j < orig_C:
+                new_row.append(src_row[j])
+            elif src_row:
+                new_row.append(src_row[-1])
+            else:
+                new_row.append("")
+        new_values.append(new_row)
+
+    new_matrix = {**matrix, "rows": new_rows, "columns": new_cols, "values": new_values,
+                  "globalRowIndex": new_R, "globalColumnIndex": new_C}
+    return {**expr, "matrix": new_matrix}
+
+
+def _fix_undefined_model_refs(nodes: List[Dict]) -> List[Dict]:
+    """Add placeholder expressions (condition '0') for any cross-node <modelset>.<expr>
+    references that appear in conditions but are not defined in the target modelset."""
+    ms_map: Dict[str, Dict] = {}  # name → {"idx": int, "exprs": set}
+    for idx, node in enumerate(nodes):
+        if node.get("type") == "modelSet":
+            name = node.get("name", "")
+            exprs = node.get("expressions") or []
+            ms_map[name] = {
+                "idx": idx,
+                "exprs": {e.get("name", "") for e in exprs if e.get("name")},
+            }
+
+    if not ms_map:
+        return nodes
+
+    skip_ns = {"bureau", "bank", "input"}
+    cond_re = re.compile(r"\b([a-z][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b")
+
+    all_conds = ""
+    for node in nodes:
+        for expr in node.get("expressions") or []:
+            all_conds += " " + expr.get("condition", "")
+            dt = expr.get("decisionTableRules") or {}
+            for h in dt.get("headers") or []:
+                all_conds += " " + str(h)
+        for rule in node.get("rules") or []:
+            all_conds += " " + rule.get("approveCondition", "")
+            all_conds += " " + rule.get("cantDecideCondition", "")
+
+    seen: Dict[str, set] = {}
+    missing: Dict[str, List[str]] = {}
+    for m in cond_re.finditer(all_conds):
+        ns, field = m.group(1), m.group(2)
+        if ns in skip_ns or ns not in ms_map:
+            continue
+        if field in ms_map[ns]["exprs"]:
+            continue
+        seen.setdefault(ns, set())
+        if field not in seen[ns]:
+            seen[ns].add(field)
+            missing.setdefault(ns, []).append(field)
+
+    for ms_name, expr_names in missing.items():
+        info = ms_map[ms_name]
+        node = nodes[info["idx"]]
+        exprs = list(node.get("expressions") or [])
+        for expr_name in expr_names:
+            exprs.append({
+                "name": expr_name,
+                "id": _uuid(),
+                "seqNo": len(exprs),
+                "condition": "0",
+                "type": "expression",
+                "decisionTableRules": _EMPTY_DT.copy(),
+                "matrix": _EMPTY_MATRIX.copy(),
+                "tag": _uuid(),
+            })
+            info["exprs"].add(expr_name)
+        node["expressions"] = exprs
+
+    return nodes
+
+
 def _modelset(name: str, x: int, y: int, expressions: List[Dict], next_state: Dict) -> Dict:
     expr_objs = []
     for i, expr in enumerate(expressions):
         etype = expr.get("type", "expression")
 
         if etype == "matrix":
+            expr = _enforce_matrix_limits(expr)
             obj: Dict[str, Any] = {
                 "name": expr.get("name", f"expr_{i}"),
                 "id": _uuid(),
@@ -200,6 +350,153 @@ def assemble_workflow(extracted: Dict[str, Any], sample_payload: str = "") -> Di
     scorecard_exprs = extracted.get("scorecard_expressions", [])
     named_modelsets: List[Dict] = extracted.get("named_modelsets", [])
 
+    # Collect input variable names from extracted data to detect expression name conflicts.
+    # Uses str(extracted) so no dependency on _collect_conditions (defined later).
+    _input_var_names = set(re.findall(r"\binput\.([a-zA-Z_][a-zA-Z0-9_]*)\b", str(extracted)))
+
+    def _dedup_exprs(exprs: List[Dict]) -> List[Dict]:
+        """Remove duplicate expression names (keep first) and rename any expression
+        whose name matches an input variable name (suffix _calc to avoid collisions).
+        Also updates condition strings within the same batch so intra-modelSet
+        references remain consistent after renaming."""
+        # Pass 1: build rename map for clashing names.
+        rename_map = {
+            e["name"]: e["name"] + "_calc"
+            for e in exprs
+            if e.get("name") and e["name"] in _input_var_names
+        }
+
+        seen: set = set()
+        deduped: List[Dict] = []
+        for e in exprs:
+            name = e.get("name", "")
+            if name in rename_map:
+                name = rename_map[name]
+                e = {**e, "name": name}
+            # Propagate renames into condition text.
+            if rename_map:
+                cond = e.get("condition", "")
+                if cond:
+                    updated = cond
+                    for old, new in rename_map.items():
+                        updated = re.sub(r'\b' + re.escape(old) + r'\b', new, updated)
+                    if updated != cond:
+                        e = {**e, "condition": updated}
+            if name and name not in seen:
+                seen.add(name)
+                deduped.append(e)
+        return deduped
+
+    def _fix_modelset_refs(exprs: List[Dict]) -> List[Dict]:
+        """Fix stale bare-name references in DT headers, matrix headers, and condition
+        strings. When the LLM names an expression 'foo_calc' but references it as 'foo'
+        in headers or sibling conditions, this aligns those references to the actual name."""
+        name_set = {e["name"] for e in exprs if e.get("name")}
+        alias_map = {
+            n[:-5]: n
+            for n in name_set
+            if n.endswith("_calc") and n[:-5] not in name_set
+        }
+        if not alias_map:
+            return exprs
+
+        def apply_alias(s: str) -> str:
+            if "." in s:
+                return s
+            return alias_map.get(s, s)
+
+        def apply_alias_cond(s: str) -> str:
+            for old, new in alias_map.items():
+                s = re.sub(r'\b' + re.escape(old) + r'\b', new, s)
+            return s
+
+        result = []
+        for e in exprs:
+            etype = e.get("type", "expression")
+            if etype == "expression":
+                cond = e.get("condition", "")
+                updated = apply_alias_cond(cond)
+                if updated != cond:
+                    e = {**e, "condition": updated}
+            elif etype == "decisionTable":
+                dt = e.get("decisionTableRules")
+                if isinstance(dt, dict):
+                    dt_copy = dict(dt)
+                    dt_changed = False
+                    headers = dt.get("headers") or []
+                    new_headers = [apply_alias(h) if isinstance(h, str) else h for h in headers]
+                    if new_headers != headers:
+                        dt_copy["headers"] = new_headers
+                        dt_changed = True
+                    rows = dt.get("rows") or []
+                    new_rows = []
+                    rows_changed = False
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            new_rows.append(row)
+                            continue
+                        cols = row.get("columns") or []
+                        new_cols = []
+                        cols_changed = False
+                        for col in cols:
+                            if isinstance(col, dict) and "name" in col:
+                                new_name = apply_alias(col["name"])
+                                if new_name != col["name"]:
+                                    col = {**col, "name": new_name}
+                                    cols_changed = True
+                            new_cols.append(col)
+                        if cols_changed:
+                            row = {**row, "columns": new_cols}
+                            rows_changed = True
+                        new_rows.append(row)
+                    if rows_changed:
+                        dt_copy["rows"] = new_rows
+                        dt_changed = True
+                    if dt_changed:
+                        e = {**e, "decisionTableRules": dt_copy}
+            elif etype == "matrix":
+                mat = e.get("matrix")
+                if isinstance(mat, dict):
+                    mat_copy = dict(mat)
+                    mat_changed = False
+                    rows = mat.get("rows") or []
+                    new_rows = []
+                    rows_changed = False
+                    for row in rows:
+                        if isinstance(row, dict) and "header" in row:
+                            new_h = apply_alias(row["header"])
+                            if new_h != row["header"]:
+                                row = {**row, "header": new_h}
+                                rows_changed = True
+                        new_rows.append(row)
+                    if rows_changed:
+                        mat_copy["rows"] = new_rows
+                        mat_changed = True
+                    cols = mat.get("columns") or []
+                    new_cols = []
+                    cols_changed = False
+                    for col in cols:
+                        if isinstance(col, dict) and "header" in col:
+                            new_h = apply_alias(col["header"])
+                            if new_h != col["header"]:
+                                col = {**col, "header": new_h}
+                                cols_changed = True
+                        new_cols.append(col)
+                    if cols_changed:
+                        mat_copy["columns"] = new_cols
+                        mat_changed = True
+                    if mat_changed:
+                        e = {**e, "matrix": mat_copy}
+            result.append(e)
+        return result
+
+    elig_exprs = _fix_modelset_refs(_dedup_exprs(elig_exprs))
+    scorecard_exprs = _fix_modelset_refs(_dedup_exprs(scorecard_exprs))
+    named_modelsets = [
+        {**ms, "expressions": _fix_modelset_refs(_dedup_exprs(ms.get("expressions", [])))}
+        for ms in named_modelsets
+    ]
+
     # For the final_decision approve condition, a ruleset "counts" only if it
     # has at least one non-muted rule.
     def _has_active_rules(rs: Dict) -> bool:
@@ -243,6 +540,25 @@ def assemble_workflow(extracted: Dict[str, Any], sample_payload: str = "") -> Di
         return BASE_RULESET + RULE_EXTRA * len(rule_list)
 
     nodes: List[Dict] = []
+
+    def append_modelset(base_name: str, exprs: List[Dict], final_next: Dict) -> None:
+        """Build one or more modelSet nodes, splitting into chunks of _MODELSET_LIMIT.
+        Chunks are named base_name, base_name_2, … The last chunk's nextState is
+        final_next; each preceding chunk points to the next."""
+        if not exprs:
+            return
+        chunk_names: List[str] = []
+        chunk_exprs: List[List[Dict]] = []
+        for i in range(0, len(exprs), _MODELSET_LIMIT):
+            name = base_name if i == 0 else f"{base_name}_{i // _MODELSET_LIMIT + 1}"
+            chunk_names.append(name)
+            chunk_exprs.append(exprs[i: i + _MODELSET_LIMIT])
+        for ci, (cname, cexprs) in enumerate(zip(chunk_names, chunk_exprs)):
+            if ci + 1 < len(chunk_names):
+                next_state: Dict = {"name": chunk_names[ci + 1], "type": "modelSet"}
+            else:
+                next_state = final_next
+            nodes.append(_modelset(cname, place(BASE_MEDIUM), Y_MAIN, cexprs, next_state=next_state))
 
     # ── 1. Start  (x=0, y=0) ─────────────────────────────────────────
     datasource_name = "Source_Node"
@@ -308,11 +624,7 @@ def assemble_workflow(extracted: Dict[str, Any], sample_payload: str = "") -> Di
         "nextState": after_datasource,
     })
 
-    if scorecard_exprs:
-        nodes.append(_modelset(
-            "scorecard", place(BASE_MEDIUM), Y_MAIN, scorecard_exprs,
-            next_state=after_scorecard,
-        ))
+    append_modelset("scorecard", scorecard_exprs, after_scorecard)
 
     # ── Named modelsets (between scorecard and first ruleset) ───────────
     for i, ms in enumerate(named_modelsets):
@@ -322,7 +634,7 @@ def assemble_workflow(extracted: Dict[str, Any], sample_payload: str = "") -> Di
             ms_next = {"name": named_modelsets[i + 1]["name"], "type": "modelSet"}
         else:
             ms_next = _first_ruleset_ref()
-        nodes.append(_modelset(ms_name, place(BASE_MEDIUM), Y_MAIN, ms_exprs, next_state=ms_next))
+        append_modelset(ms_name, ms_exprs, ms_next)
 
     def _muted_switch(sw_name: str, rules: List[Dict], forward: Dict) -> Dict:
         """Muted ruleSets: pass and reject both continue forward. cantDecide too if present."""
@@ -399,11 +711,7 @@ def assemble_workflow(extracted: Dict[str, Any], sample_payload: str = "") -> Di
     ]))
 
     # ── 10. Eligibility modelSet ──────────────────────────────────────
-    if elig_exprs:
-        nodes.append(_modelset(
-            "eligibility", place(BASE_MEDIUM), Y_MAIN, elig_exprs,
-            next_state={"name": END_APPROVED, "type": "end"},
-        ))
+    append_modelset("eligibility", elig_exprs, {"name": END_APPROVED, "type": "end"})
 
     # ── 11. End nodes ─────────────────────────────────────────────────
     outputs: List[Dict] = []
@@ -428,7 +736,10 @@ def assemble_workflow(extracted: Dict[str, Any], sample_payload: str = "") -> Di
         "metadata": {"x": end_x, "y": Y_REJECTED, "nodeColor": 2},
     })
 
-    # ── 12. Build inputs array ────────────────────────────────────────
+    # ── 12. Post-process: fill in any undefined cross-node expression refs ──
+    nodes = _fix_undefined_model_refs(nodes)
+
+    # ── 13. Build inputs array ────────────────────────────────────────
     inputs = _build_inputs(nodes, sample_payload=sample_payload)
 
     return {

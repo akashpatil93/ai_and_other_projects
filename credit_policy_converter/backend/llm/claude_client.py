@@ -162,6 +162,10 @@ class ClaudeClient:
                 result[s["name"]] = "pre_read"
             elif any(k in nl for k in ["exposure", "limit"]):
                 result[s["name"]] = "modelset"
+            elif any(k in nl for k in ["offer decision", "offer calc", "offer table",
+                                        "warranty", "product offer", "rate card", "fee table",
+                                        "pricing", "credit strategy decision", "interest rate matrix"]):
+                result[s["name"]] = "modelset"
             elif any(k in nl for k in ["common", "shared"]):
                 result[s["name"]] = "common_rules"
             # Explicit skip types

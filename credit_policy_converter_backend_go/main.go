@@ -278,34 +278,86 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Accept multipart/form-data (file + context + optional sample_payload)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "failed to parse form: "+err.Error())
-		return
-	}
+	var (
+		fileBytes     []byte
+		filename      string
+		userContext   string
+		samplePayload string
+		fileID        string
+	)
 
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "missing 'file' field: "+err.Error())
-		return
+	ct := r.Header.Get("Content-Type")
+	if strings.Contains(ct, "multipart/form-data") {
+		// Single-step: file uploaded directly in this request
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			writeError(w, http.StatusBadRequest, "failed to parse form: "+err.Error())
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "missing 'file' field: "+err.Error())
+			return
+		}
+		defer file.Close()
+		fileBytes, err = io.ReadAll(file)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read file: "+err.Error())
+			return
+		}
+		filename = header.Filename
+		userContext = r.FormValue("context")
+		samplePayload = r.FormValue("sample_payload")
+	} else {
+		// Two-step: file already uploaded, reference by file_id
+		var req struct {
+			FileID        string `json:"file_id"`
+			Context       string `json:"context"`
+			SamplePayload string `json:"sample_payload"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.FileID == "" {
+			writeError(w, http.StatusBadRequest, "missing 'file_id' — upload first via /api/upload or send file as multipart/form-data")
+			return
+		}
+		uploadsMu.RLock()
+		entry, ok := uploadsStore[req.FileID]
+		uploadsMu.RUnlock()
+		if !ok {
+			writeError(w, http.StatusNotFound, "File not found. Upload first via /api/upload.")
+			return
+		}
+		fileBytes = entry.Content
+		filename = entry.Filename
+		fileID = req.FileID
+		userContext = req.Context
+		samplePayload = req.SamplePayload
 	}
-	defer file.Close()
-
-	fileBytes, err := io.ReadAll(file)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read file: "+err.Error())
-		return
-	}
-
-	userContext := r.FormValue("context")
-	samplePayload := r.FormValue("sample_payload")
 
 	svc := generator.GetService(anthropicURL())
 
-	sections, err := svc.ParseDocument(fileBytes, header.Filename)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "parse failed: "+err.Error())
-		return
+	// Reuse pre-parsed sections when available (two-step flow)
+	var sections []generator.Section
+	if fileID != "" {
+		uploadsMu.RLock()
+		entry := uploadsStore[fileID]
+		uploadsMu.RUnlock()
+		sections = entry.Sections
+	}
+	if len(sections) == 0 {
+		var err error
+		sections, err = svc.ParseDocument(fileBytes, filename)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "parse failed: "+err.Error())
+			return
+		}
+		if fileID != "" {
+			uploadsMu.Lock()
+			uploadsStore[fileID].Sections = sections
+			uploadsMu.Unlock()
+		}
 	}
 	if len(sections) == 0 {
 		writeError(w, http.StatusBadRequest, "No sections found in document.")
@@ -320,6 +372,16 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	workflow := svc.AssembleWorkflow(extracted, samplePayload)
+	validation := svc.ValidateWorkflow(workflow)
+
+	workflowID := uuid.New().String()
+	workflowsMu.Lock()
+	workflowsStore[workflowID] = &workflowEntry{
+		Workflow:   workflow,
+		Validation: validation,
+		FileID:     fileID,
+	}
+	workflowsMu.Unlock()
 
 	writeJSON(w, http.StatusOK, workflow)
 }
@@ -363,12 +425,7 @@ func handleWorkflow(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "Workflow not found.")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"workflow_id": id,
-			"workflow":    entry.Workflow,
-			"validation":  entry.Validation,
-			"file_id":     entry.FileID,
-		})
+		writeJSON(w, http.StatusOK, entry.Workflow)
 
 	case http.MethodPut:
 		var req struct {
@@ -395,11 +452,7 @@ func handleWorkflow(w http.ResponseWriter, r *http.Request) {
 		entry.Validation = validation
 		workflowsMu.Unlock()
 
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"workflow_id": id,
-			"workflow":    req.Workflow,
-			"validation":  validation,
-		})
+		writeJSON(w, http.StatusOK, req.Workflow)
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
