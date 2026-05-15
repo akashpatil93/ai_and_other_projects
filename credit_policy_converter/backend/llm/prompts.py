@@ -378,8 +378,8 @@ Computed value cross-node references (see Expression Reference Rules):
 ───────────────────────────────────────────────────────
 ### Number Functions
 ───────────────────────────────────────────────────────
-  max(a, b)   min(a, b)   abs(n)
-  ceil(n)     floor(n)    round(n)
+  MAX(a, b)   MIN(a, b)   ABS(n)
+  CEIL(n)     FLOOR(n)    ROUND(n)
   int(v)      float(v)    string(v)
 
 ───────────────────────────────────────────────────────

@@ -316,8 +316,8 @@ Computed value cross-node references (see Expression Reference Rules):
 ───────────────────────────────────────────────────────
 ### Number Functions
 ───────────────────────────────────────────────────────
-  max(a, b)   min(a, b)   abs(n)
-  ceil(n)     floor(n)    round(n)
+  MAX(a, b)   MIN(a, b)   ABS(n)
+  CEIL(n)     FLOOR(n)    ROUND(n)
   int(v)      float(v)    string(v)
 
 ───────────────────────────────────────────────────────
@@ -1285,8 +1285,8 @@ func parseDocx(data []byte) ([]Section, error) {
 
 	// Strategy 3: whole document
 	full := joinBlocks(blocks)
-	if len(full) > 8000 {
-		full = full[:8000]
+	if len(full) > 24000 {
+		full = full[:24000]
 	}
 	return []Section{{
 		Name:     "Document",
@@ -1310,8 +1310,8 @@ func joinBlocks(blocks []docxBlock2) string {
 func makeDocxSection(name, text string) Section {
 	text = strings.TrimSpace(text)
 	preview := text
-	if len(preview) > 8000 {
-		preview = preview[:8000]
+	if len(preview) > 24000 {
+		preview = preview[:24000]
 	}
 	return Section{
 		Name:     name,

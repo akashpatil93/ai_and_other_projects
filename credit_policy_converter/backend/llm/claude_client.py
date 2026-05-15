@@ -229,44 +229,50 @@ class ClaudeClient:
         for s in sections:
             print(f"[debug]   section: '{s['name']}' ({s.get('row_count', 0)} rows, {len(s.get('text',''))} chars)")
 
-        summary_lines = []
-        for s in sections:
-            h_preview = ", ".join(str(h) for h in s.get("headers", [])[:6])
-            summary_lines.append(
-                f"- {s['name']}: {s.get('row_count', 0)} rows"
-                + (f", headers: {h_preview}" if h_preview else "")
-            )
+        # Single-section PDF/DOCX fallback: the parser returned the whole document as one
+        # unnamed section. Bypass LLM classification — the section name ("Policy Document"
+        # or "Document") looks like metadata to the classifier, causing it to be skipped.
+        is_single_fallback = (
+            len(sections) == 1
+            and sections[0]["name"] in ("Policy Document", "Document")
+        )
 
-        try:
-            classify_resp = await self._call(
-                get_classify_sections_prompt("\n".join(summary_lines)), max_tokens=2048
-            )
-            raw_types = self._parse_json(classify_resp)
-            if not isinstance(raw_types, dict):
-                print(f"[debug] classify LLM returned non-dict, using name-based fallback")
+        if is_single_fallback:
+            section_types = {sections[0]["name"]: "go_no_go"}
+            print(f"[debug] single-fallback section — forcing go_no_go, skipping classify call")
+        else:
+            summary_lines = []
+            for s in sections:
+                h_preview = ", ".join(str(h) for h in s.get("headers", [])[:6])
+                summary_lines.append(
+                    f"- {s['name']}: {s.get('row_count', 0)} rows"
+                    + (f", headers: {h_preview}" if h_preview else "")
+                )
+            try:
+                classify_resp = await self._call(
+                    get_classify_sections_prompt("\n".join(summary_lines)), max_tokens=2048
+                )
+                raw_types = self._parse_json(classify_resp)
+                if not isinstance(raw_types, dict):
+                    print(f"[debug] classify LLM returned non-dict, using name-based fallback")
+                    section_types = self._classify_by_name(sections)
+                else:
+                    print(f"[debug] classify LLM result: {raw_types}")
+                    raw_lower = {k.lower().strip(): v for k, v in raw_types.items()}
+                    section_types = {
+                        s["name"]: raw_types.get(
+                            s["name"],
+                            raw_lower.get(s["name"].lower().strip(), "")
+                        )
+                        for s in sections
+                    }
+                    name_fallback = self._classify_by_name(sections)
+                    for s in sections:
+                        if not section_types.get(s["name"]):
+                            section_types[s["name"]] = name_fallback.get(s["name"], "go_no_go")
+            except Exception as e:
+                print(f"[debug] classify failed ({e}), using name-based fallback")
                 section_types = self._classify_by_name(sections)
-            else:
-                print(f"[debug] classify LLM result: {raw_types}")
-                # Build a case-insensitive lookup: try exact match first, then lowercase match
-                section_types = raw_types
-                # Normalise keys: for any section whose name isn't in raw_types,
-                # try matching by lowercased / stripped name
-                raw_lower = {k.lower().strip(): v for k, v in raw_types.items()}
-                section_types = {
-                    s["name"]: raw_types.get(
-                        s["name"],
-                        raw_lower.get(s["name"].lower().strip(), "")
-                    )
-                    for s in sections
-                }
-                # For any section still without a type, fall through to name-based
-                name_fallback = self._classify_by_name(sections)
-                for s in sections:
-                    if not section_types.get(s["name"]):
-                        section_types[s["name"]] = name_fallback.get(s["name"], "go_no_go")
-        except Exception as e:
-            print(f"[debug] classify failed ({e}), using name-based fallback")
-            section_types = self._classify_by_name(sections)
 
         print(f"[debug] final section_types: {section_types}")
 
@@ -305,6 +311,17 @@ class ClaudeClient:
                         rules = self._parse_json(raw)
                         print(f"[debug] section '{name}' (type={stype}): Claude returned {type(rules).__name__} len={len(rules) if isinstance(rules, list) else 'N/A'}")
                         if isinstance(rules, list) and rules:
+                            # Single-fallback: also extract eligibility from the same text so
+                            # offer/FOIR computations aren't silently dropped.
+                            if is_single_fallback and len(text) > 4000:
+                                try:
+                                    elig_raw = await self._call(_inject(get_eligibility_prompt(text)), max_tokens=16384)
+                                    elig_exprs = self._parse_json(elig_raw)
+                                    if isinstance(elig_exprs, list) and elig_exprs:
+                                        print(f"[debug] single-fallback eligibility: {len(elig_exprs)} expressions")
+                                        return {"type": "ruleset_with_eligibility", "key": rs_key, "data": rules, "eligibility": elig_exprs}
+                                except Exception as elig_exc:
+                                    print(f"[warn] single-fallback eligibility extraction failed: {elig_exc}")
                             return {"type": "ruleset", "key": rs_key, "data": rules}
 
                     elif stype == "modelset":
@@ -346,8 +363,10 @@ class ClaudeClient:
             if not res:
                 continue
             t = res["type"]
-            if t == "ruleset":
+            if t in ("ruleset", "ruleset_with_eligibility"):
                 named_ruleset_map.setdefault(res["key"], []).extend(res["data"])
+                if t == "ruleset_with_eligibility":
+                    result["eligibility_expressions"].extend(res["eligibility"])
             elif t == "modelset":
                 named_modelset_map.setdefault(res["key"], []).extend(res["data"])
             elif t == "eligibility":

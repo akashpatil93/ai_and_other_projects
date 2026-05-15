@@ -210,49 +210,50 @@ func (s *svc) ExtractAllSections(ctx context.Context, sections []Section, userCo
 		summaryLines = append(summaryLines, fmt.Sprintf("- %s: %d rows%s", s.Name, s.RowCount, hPreview))
 	}
 
+	// Single-section PDF/DOCX fallback: the parser returned the whole document as one
+	// unnamed section. Bypass LLM classification — the section name ("Policy Document"
+	// or "Document") looks like metadata to the classifier, causing it to be skipped.
+	isSingleFallback := len(sections) == 1 &&
+		(sections[0].Name == "Policy Document" || sections[0].Name == "Document")
+
 	var sectionTypes map[string]string
-	classifyResp, err := s.callClaudeNoThinking(ctx, getClassifySectionsPrompt(strings.Join(summaryLines, "\n")), 2048, apiKey)
-	if err == nil {
-		parsed := extractJSON(classifyResp)
-		if m, ok := parsed.(map[string]interface{}); ok && len(m) > 0 {
-			// Build case-insensitive lookup so LLM key variants (snake_case etc.) still match
-			rawTypes := make(map[string]string)
-			rawLower := make(map[string]string) // lowercase key → type
-			for k, v := range m {
-				if vs, ok := v.(string); ok {
-					rawTypes[k] = vs
-					rawLower[strings.ToLower(strings.TrimSpace(k))] = vs
+	if isSingleFallback {
+		sectionTypes = map[string]string{sections[0].Name: "go_no_go"}
+	} else {
+		classifyResp, classErr := s.callClaudeNoThinking(ctx, getClassifySectionsPrompt(strings.Join(summaryLines, "\n")), 2048, apiKey)
+		if classErr == nil {
+			parsed := extractJSON(classifyResp)
+			if m, ok := parsed.(map[string]interface{}); ok && len(m) > 0 {
+				rawTypes := make(map[string]string)
+				rawLower := make(map[string]string)
+				for k, v := range m {
+					if vs, ok := v.(string); ok {
+						rawTypes[k] = vs
+						rawLower[strings.ToLower(strings.TrimSpace(k))] = vs
+					}
 				}
-			}
-			sectionTypes = make(map[string]string)
-			nameFallback := classifyByName(sections)
-			for _, sec := range sections {
-				if t, ok := rawTypes[sec.Name]; ok {
-					sectionTypes[sec.Name] = t
-				} else if t, ok := rawLower[strings.ToLower(strings.TrimSpace(sec.Name))]; ok {
-					sectionTypes[sec.Name] = t
-				} else {
-					// LLM didn't classify this section — use name-based fallback
-					sectionTypes[sec.Name] = nameFallback[sec.Name]
+				sectionTypes = make(map[string]string)
+				nameFallback := classifyByName(sections)
+				for _, sec := range sections {
+					if t, ok := rawTypes[sec.Name]; ok {
+						sectionTypes[sec.Name] = t
+					} else if t, ok := rawLower[strings.ToLower(strings.TrimSpace(sec.Name))]; ok {
+						sectionTypes[sec.Name] = t
+					} else {
+						sectionTypes[sec.Name] = nameFallback[sec.Name]
+					}
 				}
 			}
 		}
-	}
-	if len(sectionTypes) == 0 {
-		sectionTypes = classifyByName(sections)
+		if len(sectionTypes) == 0 {
+			sectionTypes = classifyByName(sections)
+		}
 	}
 	log.Printf("[debug] section_types: %v", sectionTypes)
 
 	// Step 2: Process each section concurrently
 	// NOTE: "exposure" removed — exposure sections contain rules and should be processed as modelset
 	skipTypes := map[string]bool{"metadata": true, "pre_read": true, "change_history": true}
-
-	// Detect single-section PDF fallback: the PDF parser couldn't split the document
-	// into multiple sections and returned the whole doc as one "Policy Document" section.
-	// In this case, run eligibility extraction in addition to go_no_go extraction on the
-	// same text so we don't silently drop offer/eligibility computations.
-	isSingleFallback := len(sections) == 1 &&
-		(sections[0].Name == "Policy Document" || sections[0].Name == "Document")
 
 	type sectionResult struct {
 		idx          int
